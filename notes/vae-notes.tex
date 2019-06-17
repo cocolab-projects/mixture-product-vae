@@ -1,0 +1,188 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{mathtools}
+\usepackage{amsmath,amssymb}
+\usepackage[makeroom]{cancel}
+
+\DeclareMathOperator{\E}{\mathob{E}}
+\DeclareMathOperator{\KL}{KL}
+
+\title{VAE Notes}
+\author{Conner Vercellino}
+\date{June 17, 2019}
+
+\begin{document}
+
+\maketitle
+\section*{Definitions}
+
+\subsubsection*{Bayes}
+
+\[
+p(z \mid x) = \frac{p(x, z)}{\sum_{z} p(x, z)} = \frac{p(x, z)}{p(x)}
+\]
+
+\subsubsection*{Chain}
+
+\[
+p(x, z) = p(x \mid z) p(z)
+\]
+
+\subsubsection*{Marginalization}
+
+\[
+\sum_{z} p(x, z) = p(x)
+\]
+
+\subsubsection*{``Evidence''}
+
+$X$ data (also called "observations")
+
+\subsubsection*{``Prior''}
+
+$p(z)$ "before you see the data"
+
+\subsubsection*{``Posterior''}
+
+$p(z \mid x)$ ``after you see the data''
+
+\subsubsection*{Log Rules}
+
+\[
+\log(AB) = \log(A) + \log(B)
+\]
+
+\[
+\log(\frac{A}{B}) = \log A - \log B
+\]
+
+\subsubsection*{``Expectation''}
+
+Or ``Average''...
+
+\[
+\mathop{\mathbb{E}}_{p(x)}[f(x)] = \sum_{x} \overbrace{p(x)}^{\mathclap{\text{probability of $x$ under $p$}}} \underbrace{f(x)}_{\mathclap{\text{eval of function at $x$}}}
+\]
+
+\subsection*{The Two Goals of VAE}
+
+\begin{enumerate}
+    \item 
+    \textbf{Density Estimation} \\ Estimate $p(x)$ for $x \in$ dataset. 
+    \item
+    \textbf{Inference} \\ Given $p(z \mid x)$, find the best $z$ for any $x$.
+\end{enumerate}
+
+\subsection*{Deriving the ELBO}
+
+To optimize, we need an objective. The objective in VAEs is ELBO. We want to maximize $\log p(x)$. \\
+
+\noindent Introduce latent variable
+
+\begin{align*}
+    \log p(x) = \log \sum_{z} p(x, z) && \text{by marginalization} \\
+    = \log \sum_{z} \frac{p(x, z)}{q(z \mid x)} q(z \mid x) && \text{by times by $1$}
+\end{align*}
+
+\noindent We call $q_{\phi}(z \mid x)$ a ``approximate posterior''.
+It has parameters $\phi$.
+Often $q$ is Gaussian, so $\phi = \{ \mu, \sigma \}$.
+We want $q(z \mid x) = p(z \mid x)$.
+
+\begin{align*}
+    = \log \mathop{\mathbb{E}}_{q(z \mid x)}
+    \Big[ \frac{p(x, z)}{q(z \mid x)} \Big] && 
+    \text{def of $\mathbb{E}$} \\
+    \geq \mathop{\mathbb{E}}_{q(z \mid x)} \Big[ \log \frac{p(x, z)}{q(z \mid x)} \Big] &&
+    \underset{\log(A + B) \geq (\log A + \log B)}{\text{Jensen's Inequality}} \\
+    = \mathop{\mathbb{E}}_{q(z \mid x)} \Big[ \log \frac{p(x \mid z)p(z)}{q(z \mid x)} \Big] && \text{chain} \\
+    = \mathop{\mathbb{E}}_{q(z \mid x)} \Big[ \log p(x \mid z) + \log \frac{p(z)}{q(z \mid x)} \Big] && \text{log rule} \\
+    = \mathop{\mathbb{E} }_{q(z \mid x)} \Big[ \log p(x \mid z) \Big]
+    + 
+    \underbrace{\mathop{\mathbb{E}}_{q(z \mid x)} \Big[ \log \frac{p(z)}{q(z \mid x)} \Big]}_{\mathclap{-\KL{(q(z \mid x)} \mid \mid p(z)) }} && \text{linearity}
+\end{align*}
+
+\subsection*{Gradients of ELBO}
+
+\[ 
+    \text{ELBO} \triangleq \mathop{\mathbb{E}}_{q_{\phi}(z \mid x)} \Big[ \log p_{\theta}(x, z) - \log q_{\phi}(z \mid x) \Big]
+\]
+
+\[
+    \nabla_{\theta} \text{ELBO} =
+    \nabla_{\theta} \Big(
+        \mathop{\mathbb{E}}_{q_{\phi}(z \mid x)}
+        \Big[
+            \log p_{\theta}(x, z) - \log q_{\phi}(z \mid x)
+        \Big]
+    \Big)
+\]
+
+\[
+    = \nabla_{\theta} \Big(
+        \sum_{z} q_{\theta} (z \mid x) \Big[
+            \log p_{\phi} - \log q_{\theta}(z \mid x)
+        \Big]
+    \Big)
+\]
+
+\[
+     = \nabla_{\theta} \Big(
+        \sum_{z} q_{\theta}(z \mid x) \log p_{\theta}(x, z)
+     \Big)
+     - \cancel{\nabla_{\theta} \Big(
+        \sum_{z} q_{\phi}(z \mid x) \log q_{\theta}(z \mid x)
+     \Big)}
+\]
+
+\[
+    = \sum_{z} \nabla_{\theta}(q_{\theta}(z \mid x) \log p_{\theta}(x, z))
+\]
+
+\[
+    \nabla_{\phi}\text{ELBO} = \nabla_{\phi} \mathop{\mathbb{E}}_{q_{\phi}(z \mid x)} \Big[
+        \log p_{\phi}(x, z) - \log q_{\phi(z \mid x)}
+    \Big]
+\]
+We could do this...
+\[
+= \nabla_{\phi} \sum_{z} q_{\phi}(z \mid x) \log p_{\phi} (x, z) - \nabla_{\phi} \sum_{z} q_{\phi}(z \mid x) \log q_{\phi}(z \mid x)
+\]
+This results in a dead end.
+Here we introduce the reparameterization trick...
+
+\[
+\nabla_{\phi} \mathop{\mathbb{E}}_{p(z)} \Big[
+    \log p_{\theta}(x, f(z)) - \log q_{\phi} (f(z) \mid x)
+\Big]
+\]
+Where $f$ is...
+\[
+    f = \mu + \sigma \cdot \epsilon,\ \epsilon \sim	p(z)
+\]
+
+\[
+\mathop{\mathbb{E}}_{p(\epsilon)} \Big[
+    \nabla_{\phi} \log p_{\phi}(x, f(\epsilon)) - \nabla_{\phi} \log q_{\phi} (f(\epsilon) \mid x)
+\Big]
+\]
+
+\noindent Now in practice, we have something like this:
+
+\[
+\mu,\ \sigma = \overbrace{\text{encoder}(x)}^{\mathclap{q_{\phi}(z \mid x)}}
+\]
+\[
+\epsilon \sim N(0, 1)
+\]
+\[
+z = \sigma \cdot \epsilon + \mu,\ z \sim q_{\phi}(z \mid x)
+\]
+\[
+x = \text{decoder(z)},\ p_{\theta}(x \mid z)
+\]
+\[
+(x, z, \mu, \sigma) \Rightarrow \text{compute ELBO}
+\]
+
+\end{document}
