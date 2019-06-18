@@ -19,8 +19,8 @@ class SimpleMultimodelDataset(data.TensorDataset):
         self.number_of_examples = number_of_examples
         self.dataset = torch.zeros(number_of_examples, 1)
         mask = self.dataset.bernoulli(p=0.5).byte()
-        self.dataset[mask] = self.dataset[mask].normal_(mean=1, std=1)
-        self.dataset[~mask] = self.dataset[~mask].normal_(mean=1, std=1)
+        self.dataset[mask] = self.dataset[mask].normal_(mean=10, std=1)
+        self.dataset[~mask] = self.dataset[~mask].normal_(mean=10, std=1)
 
     def __len__(self) -> int:
         return self.number_of_examples
@@ -82,12 +82,37 @@ def train(epochs: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
         print(f'\t| ELBO Running Average: {current_running_average}')
 
 
+    mu = torch.randn(1, 3000)
+    sigma = torch.randn(1, 3000)
+
+    x_mu, x_sigma = model.decode(mu, sigma)
+
+    prior = torch.mean(torch.distributions.Normal(mu, sigma).sample(), dim=0)
+    results = torch.mean(torch.distributions.Normal(x_mu, x_sigma).sample(), dim=0)
+
+    plt.hist(torch.flatten(dataset_loader.dataset.dataset[:3000]), bins=100, density=False)
+    plt.title('Dataset')
+    plt.savefig('graphs/dataset.png', bbox_inches='tight')
+
+    plt.clf()
+
+    plt.hist(prior, bins=100, density=False)
+    plt.title('Prior')
+    plt.savefig('graphs/prior.png', bbox_inches='tight')
+
+    plt.clf()
+
+    plt.hist(results, bins=100, density=False)
+    plt.title('Results')
+    plt.savefig('graphs/results.png', bbox_inches='tight')
+
+
 def gaussian_kl_divergence(mean: torch.Tensor, logvar: torch.Tensor, weight: float = 1):
     kl_div = 0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
     return weight * kl_div
 
 
-def ELBO(x: torch.Tensor, reconstructed_mean, reconstructed_logvar, 
+def ELBO(x: torch.Tensor, reconstructed_mean, reconstructed_logvar,
          latent_mean, latent_logvar) -> float:
     pdf_loss = log_pdf(x, reconstructed_mean, reconstructed_logvar)
     kl_loss = gaussian_kl_divergence(latent_mean, latent_logvar, weight=1)
