@@ -19,7 +19,7 @@ class SimpleMultimodelDataset(data.TensorDataset):
         self.number_of_examples = number_of_examples
         self.dataset = torch.zeros(number_of_examples, 1)
         mask = self.dataset.bernoulli(p=0.5).byte()
-        self.dataset[mask] = self.dataset[mask].normal_(mean=5, std=1)
+        self.dataset[mask] = self.dataset[mask].normal_(mean=-5, std=1)
         self.dataset[~mask] = self.dataset[~mask].normal_(mean=5, std=1)
 
     def __len__(self) -> int:
