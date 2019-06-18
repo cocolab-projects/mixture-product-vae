@@ -19,8 +19,8 @@ class SimpleMultimodelDataset(data.TensorDataset):
         self.number_of_examples = number_of_examples
         self.dataset = torch.zeros(number_of_examples, 1)
         mask = self.dataset.bernoulli(p=0.5).byte()
-        self.dataset[mask] = self.dataset[mask].normal_(mean=10, std=1)
-        self.dataset[~mask] = self.dataset[~mask].normal_(mean=10, std=1)
+        self.dataset[mask] = self.dataset[mask].normal_(mean=5, std=1)
+        self.dataset[~mask] = self.dataset[~mask].normal_(mean=5, std=1)
 
     def __len__(self) -> int:
         return self.number_of_examples
@@ -105,7 +105,7 @@ def ELBO(x: torch.Tensor, reconstructed_mean, reconstructed_logvar,
          latent_mean, latent_logvar) -> float:
     pdf_loss = log_pdf(x, reconstructed_mean, reconstructed_logvar)
     kl_loss = gaussian_kl_divergence(latent_mean, latent_logvar, weight=1)
-    return torch.mean(pdf_loss)  # - kl_loss)
+    return torch.mean(pdf_loss - kl_loss)
 
 
 class BaselineVAE(torch.nn.Module):
@@ -119,7 +119,7 @@ class BaselineVAE(torch.nn.Module):
         self.encoder_hidden_to_logvar = torch.nn.Linear(hidden_size, latent_size)
 
     def encode(self, x: torch.Tensor):
-        hidden = self.activation(self.encoder_input_to_hidden(x))
+        hidden = self.encoder_input_to_hidden(x)  # no nonlinearities
         latent_mean = self.encoder_hidden_to_mean(hidden)
         latent_logvar = self.encoder_hidden_to_logvar(hidden)
         return latent_mean, latent_logvar
@@ -145,7 +145,7 @@ class BaselineVAE(torch.nn.Module):
 def add_hyperparameters(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--batch-size', default=32, type=int)
-    parser.add_argument('--dataset-size', default=10000, type=int)
+    parser.add_argument('--dataset-size', default=1000, type=int)
     parser.add_argument('--hidden-size', default=8, type=int)
     parser.add_argument('--latent-size', default=1)
     return parser
@@ -157,7 +157,7 @@ def main():
     args = parser.parse_args()
 
     model = BaselineVAE(input_size=1, hidden_size=args.hidden_size, latent_size=args.latent_size)
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     dataset = SimpleMultimodelDataset(args.dataset_size)
     dataset_loader = torch.utils.data.DataLoader(
