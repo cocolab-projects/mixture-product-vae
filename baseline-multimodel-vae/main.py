@@ -47,14 +47,15 @@ class RunningAverage:
         return self.value / self.count
 
 
-def reparameterization_trick(mean: torch.Tensor, std: torch.Tensor) -> torch.Tensor:
-    batch_size = mean.shape[0]
-    latent_length = mean.shape[1]
+def reparameterization_trick(mean: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    batch_size, latent_length = mean.shape
     epsilon = torch.randn(batch_size, latent_length)
+    std = torch.exp(0.5 * logvar)
     return std * epsilon + mean
 
 
-def log_pdf(x, reconstructed_mean, reconstructed_std) -> float:
+def log_pdf(x, reconstructed_mean, reconstructed_logvar) -> float:
+    reconstructed_std = torch.exp(0.5 * reconstructed_logvar)
     return -torch.sum(
         torch.distributions.normal.Normal(
             loc=reconstructed_mean,
@@ -71,9 +72,9 @@ def train(epochs: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
     for current_epoch in range(epochs):
         print(f'> Starting epoch {current_epoch} of {epochs + 1}...')
         for batch in tqdm(dataset_loader):
-            reconstructed_mean, reconstructed_std, latent_mean, latent_std = model(batch)
+            reconstructed_mean, reconstructed_logvar, latent_mean, latent_logvar = model(batch)
             loss = ELBO(
-                batch, reconstructed_mean, reconstructed_std, latent_mean, latent_std)
+                batch, reconstructed_mean, reconstructed_logvar, latent_mean, latent_logvar)
             loss.backward()
             ELBO_running_average.update(loss.item())
             optimizer.step()
@@ -81,16 +82,15 @@ def train(epochs: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
         print(f'\t| ELBO Running Average: {current_running_average}')
 
 
-def guassian_kl_divergence(mean: torch.Tensor, std: torch.Tensor, weight: float = 1):
-    return weight * 0.5 * torch.sum(
-        1 + std - mean.pow(2) - std.exp(), dim=1
-    )
+def gaussian_kl_divergence(mean: torch.Tensor, logvar: torch.Tensor, weight: float = 1):
+    kl_div = 0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+    return weight * kl_div
 
 
-def ELBO(x: torch.Tensor, reconstructed_mean, reconstructed_std, latent_mean,
-         latent_std) -> float:
-    pdf_loss = log_pdf(x, reconstructed_mean, reconstructed_std)
-    kl_loss = guassian_kl_divergence(latent_mean, latent_std, weight=0.01)
+def ELBO(x: torch.Tensor, reconstructed_mean, reconstructed_logvar, 
+         latent_mean, latent_logvar) -> float:
+    pdf_loss = log_pdf(x, reconstructed_mean, reconstructed_logvar)
+    kl_loss = gaussian_kl_divergence(latent_mean, latent_logvar, weight=1)
     return torch.mean(pdf_loss - kl_loss)
 
 
@@ -102,24 +102,26 @@ class BaselineVAE(torch.nn.Module):
         self.activation = activation
         self.encoder_input_to_hidden = torch.nn.Linear(input_size, hidden_size)
         self.encoder_hidden_to_mean = torch.nn.Linear(hidden_size, latent_size)
-        self.encoder_hidden_to_std = torch.nn.Linear(hidden_size, latent_size)
+        self.encoder_hidden_to_logvar = torch.nn.Linear(hidden_size, latent_size)
 
     def encode(self, x: torch.Tensor):
         hidden = self.activation(self.encoder_input_to_hidden(x))
         latent_mean = self.encoder_hidden_to_mean(hidden)
-        latent_std = self.encoder_hidden_to_std(hidden)
-        return latent_mean, latent_std
+        latent_logvar = self.encoder_hidden_to_logvar(hidden)
+        return latent_mean, latent_logvar
 
     def decode(self, latent_mean: torch.Tensor,
-               latent_std: torch.Tensor) -> torch.Tensor:
+               latent_logvar: torch.Tensor) -> torch.Tensor:
         reconstructed_mean = reparameterization_trick(
-            latent_mean, latent_std)
-        return reconstructed_mean, 0.1
+            latent_mean, latent_logvar)
+        reconstructed_logvar = torch.log(torch.ones_like(reconstructed_mean) * 0.1)
+        reconstructed_logvar = reconstructed_logvar.to(latent_mean.device)
+        return reconstructed_mean, reconstructed_logvar
 
     def forward(self, x: torch.Tensor):
-        latent_mean, latent_std = self.encode(x)
-        reconstructed_mean, reconstructed_std = self.decode(latent_mean, latent_std)
-        return reconstructed_mean, reconstructed_std, latent_mean, latent_std,
+        latent_mean, latent_logvar = self.encode(x)
+        reconstructed_mean, reconstructed_logvar = self.decode(latent_mean, latent_logvar)
+        return reconstructed_mean, reconstructed_logvar, latent_mean, latent_logvar
 
 
 def add_hyperparameters(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -137,7 +139,7 @@ def main():
     args = parser.parse_args()
 
     model = BaselineVAE(input_size=1, hidden_size=32, latent_size=1)
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     dataset = SimpleMultimodelDataset(args.dataset_size)
     dataset_loader = torch.utils.data.DataLoader(
