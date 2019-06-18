@@ -72,33 +72,22 @@ def train(epochs: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
     for current_epoch in range(epochs):
         print(f'> Starting epoch {current_epoch} of {epochs + 1}...')
         for batch in tqdm(dataset_loader):
-            reconstructed_mean, reconstructed_logvar, latent_mean, latent_logvar = model(batch)
-            loss = ELBO(
-                batch, reconstructed_mean, reconstructed_logvar, latent_mean, latent_logvar)
+            reconstructed_mean, reconstructed_logvar, latent, latent_mean, latent_logvar = model(batch)
+            loss = ELBO(batch, reconstructed_mean, reconstructed_logvar, latent_mean, latent_logvar)
             loss.backward()
             ELBO_running_average.update(loss.item())
             optimizer.step()
         current_running_average = ELBO_running_average.running_average
         print(f'\t| ELBO Running Average: {current_running_average}')
 
+    _inputs = dataset_loader.dataset.dataset[:3000]
+    inputs = torch.flatten(_inputs)
+    results, _ = model.encode(_inputs)
+    results = results.flatten().detach()
 
-    mu = torch.randn(1, 3000)
-    sigma = torch.randn(1, 3000)
-
-    x_mu, x_sigma = model.decode(mu, sigma)
-
-    prior = torch.mean(torch.distributions.Normal(mu, sigma).sample(), dim=0)
-    results = torch.mean(torch.distributions.Normal(x_mu, x_sigma).sample(), dim=0)
-
-    plt.hist(torch.flatten(dataset_loader.dataset.dataset[:3000]), bins=100, density=False)
+    plt.hist(inputs, bins=100, density=False)
     plt.title('Dataset')
     plt.savefig('graphs/dataset.png', bbox_inches='tight')
-
-    plt.clf()
-
-    plt.hist(prior, bins=100, density=False)
-    plt.title('Prior')
-    plt.savefig('graphs/prior.png', bbox_inches='tight')
 
     plt.clf()
 
@@ -116,13 +105,13 @@ def ELBO(x: torch.Tensor, reconstructed_mean, reconstructed_logvar,
          latent_mean, latent_logvar) -> float:
     pdf_loss = log_pdf(x, reconstructed_mean, reconstructed_logvar)
     kl_loss = gaussian_kl_divergence(latent_mean, latent_logvar, weight=1)
-    return torch.mean(pdf_loss - kl_loss)
+    return torch.mean(pdf_loss)  # - kl_loss)
 
 
 class BaselineVAE(torch.nn.Module):
 
     def __init__(self, input_size, hidden_size, latent_size,
-                 activation: Callable = torch.nn.functional.relu) -> None:
+                 activation: Callable = torch.tanh) -> None:
         super().__init__()
         self.activation = activation
         self.encoder_input_to_hidden = torch.nn.Linear(input_size, hidden_size)
@@ -135,25 +124,29 @@ class BaselineVAE(torch.nn.Module):
         latent_logvar = self.encoder_hidden_to_logvar(hidden)
         return latent_mean, latent_logvar
 
-    def decode(self, latent_mean: torch.Tensor,
-               latent_logvar: torch.Tensor) -> torch.Tensor:
-        reconstructed_mean = reparameterization_trick(
-            latent_mean, latent_logvar)
-        reconstructed_logvar = torch.log(torch.ones_like(reconstructed_mean) * 0.1)
-        reconstructed_logvar = reconstructed_logvar.to(latent_mean.device)
+    def reparameterize(self, latent_mean: torch.Tensor,
+                       latent_logvar: torch.Tensor) -> torch.Tensor:
+        return reparameterization_trick(latent_mean, latent_logvar)
+
+    def decode(self, latent: torch.Tensor) -> torch.Tensor:
+        reconstructed_mean = latent
+        reconstructed_sigma = torch.ones_like(reconstructed_mean)
+        reconstructed_logvar = 2.0 * torch.log(reconstructed_sigma)
+        reconstructed_logvar = reconstructed_logvar.to(latent.device)
         return reconstructed_mean, reconstructed_logvar
 
     def forward(self, x: torch.Tensor):
         latent_mean, latent_logvar = self.encode(x)
-        reconstructed_mean, reconstructed_logvar = self.decode(latent_mean, latent_logvar)
-        return reconstructed_mean, reconstructed_logvar, latent_mean, latent_logvar
+        latent = self.reparameterize(latent_mean, latent_logvar)
+        reconstructed_mean, reconstructed_logvar = self.decode(latent)
+        return reconstructed_mean, reconstructed_logvar, latent, latent_mean, latent_logvar
 
 
 def add_hyperparameters(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument('--epochs', default=100, type=int)
     parser.add_argument('--batch-size', default=32, type=int)
     parser.add_argument('--dataset-size', default=10000, type=int)
-    parser.add_argument('--hidden-size', default=16, type=int)
+    parser.add_argument('--hidden-size', default=8, type=int)
     parser.add_argument('--latent-size', default=1)
     return parser
 
@@ -163,13 +156,12 @@ def main():
     parser = add_hyperparameters(parser)
     args = parser.parse_args()
 
-    model = BaselineVAE(input_size=1, hidden_size=32, latent_size=1)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    model = BaselineVAE(input_size=1, hidden_size=args.hidden_size, latent_size=args.latent_size)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
 
     dataset = SimpleMultimodelDataset(args.dataset_size)
     dataset_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=args.batch_size
-    )
+        dataset, batch_size=args.batch_size)
     train(args.epochs, model, optimizer, dataset_loader)
 
 
