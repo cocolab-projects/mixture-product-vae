@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torch.utils import data
 
+from pyro.distributions import MixtureOfDiagNormals
+
 
 class SimpleMultimodelDataset(data.TensorDataset):
 
@@ -17,7 +19,7 @@ class SimpleMultimodelDataset(data.TensorDataset):
         Returns:
         '''
         self.number_of_examples = number_of_examples
-        self.dataset = torch.zeros(number_of_examples, 1)
+        self.dataset = torch.zeros(number_of_examples, 2)
         mask = self.dataset.bernoulli(p=0.5).byte()
         self.dataset[mask] = self.dataset[mask].normal_(mean=10, std=1)
         self.dataset[~mask] = self.dataset[~mask].normal_(mean=10, std=1)
@@ -82,29 +84,29 @@ def train(epochs: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer,
         print(f'\t| ELBO Running Average: {current_running_average}')
 
 
-    mu = torch.randn(1, 3000)
-    sigma = torch.randn(1, 3000)
+    #mu = torch.randn(2, 3000)
+    # sigma = torch.randn(2, 3000)
 
-    x_mu, x_sigma = model.decode(mu, sigma)
+    # x_mu, x_sigma = model.decode(mu, sigma)
 
-    prior = torch.mean(torch.distributions.Normal(mu, sigma).sample(), dim=0)
-    results = torch.mean(torch.distributions.Normal(x_mu, x_sigma).sample(), dim=0)
+    # prior = torch.mean(torch.distributions.Normal(mu, sigma).sample(), dim=0)
+    # results = torch.mean(torch.distributions.Normal(x_mu, x_sigma).sample(), dim=0)
 
-    plt.hist(torch.flatten(dataset_loader.dataset.dataset[:3000]), bins=100, density=False)
-    plt.title('Dataset')
-    plt.savefig('graphs/dataset.png', bbox_inches='tight')
+    # plt.hist(torch.flatten(dataset_loader.dataset.dataset[:3000]), bins=100, density=False)
+    # plt.title('Dataset')
+    # plt.savefig('graphs/dataset.png', bbox_inches='tight')
 
-    plt.clf()
+    # plt.clf()
 
-    plt.hist(prior, bins=100, density=False)
-    plt.title('Prior')
-    plt.savefig('graphs/prior.png', bbox_inches='tight')
+    # plt.hist(prior, bins=100, density=False)
+    # plt.title('Prior')
+    # plt.savefig('graphs/prior.png', bbox_inches='tight')
 
-    plt.clf()
+    # plt.clf()
 
-    plt.hist(results, bins=100, density=False)
-    plt.title('Results')
-    plt.savefig('graphs/results.png', bbox_inches='tight')
+    # plt.hist(results, bins=100, density=False)
+    # plt.title('Results')
+    # plt.savefig('graphs/results.png', bbox_inches='tight')
 
 
 def gaussian_kl_divergence(mean: torch.Tensor, logvar: torch.Tensor, weight: float = 1):
@@ -128,8 +130,12 @@ class BaselineVAE(torch.nn.Module):
         self.encoder_input_to_hidden = torch.nn.Linear(input_size, hidden_size)
         self.encoder_hidden_to_mean = torch.nn.Linear(hidden_size, latent_size)
         self.encoder_hidden_to_logvar = torch.nn.Linear(hidden_size, latent_size)
+        self.linear = torch.nn.Linear(2, 2)
+        self.distributions = torch.nn.Parameter(torch.randn(32, 2).uniform_())
+        self.component_logits = None
 
     def encode(self, x: torch.Tensor):
+        self.component_logits = self.linear(x)
         hidden = self.activation(self.encoder_input_to_hidden(x))
         latent_mean = self.encoder_hidden_to_mean(hidden)
         latent_logvar = self.encoder_hidden_to_logvar(hidden)
@@ -137,8 +143,16 @@ class BaselineVAE(torch.nn.Module):
 
     def decode(self, latent_mean: torch.Tensor,
                latent_logvar: torch.Tensor) -> torch.Tensor:
-        reconstructed_mean = reparameterization_trick(
-            latent_mean, latent_logvar)
+
+        print((0.5 * latent_logvar.view(-1, 2, 2)).exp())
+
+        reconstructed_mean = MixtureOfDiagNormals(
+            locs=latent_mean.view(-1, 2, 2),
+            coord_scale=(0.5 * latent_logvar.view(-1, 2, 2)).exp(),
+            component_logits=torch.nn.functional.softmax(
+                self.component_logits, dim=0)
+        ).rsample()
+
         reconstructed_logvar = torch.log(torch.ones_like(reconstructed_mean) * 0.1)
         reconstructed_logvar = reconstructed_logvar.to(latent_mean.device)
         return reconstructed_mean, reconstructed_logvar
@@ -154,7 +168,7 @@ def add_hyperparameters(parser: argparse.ArgumentParser) -> argparse.ArgumentPar
     parser.add_argument('--batch-size', default=32, type=int)
     parser.add_argument('--dataset-size', default=10000, type=int)
     parser.add_argument('--hidden-size', default=16, type=int)
-    parser.add_argument('--latent-size', default=1)
+    parser.add_argument('--latent-size', default=4)
     return parser
 
 
@@ -163,7 +177,7 @@ def main():
     parser = add_hyperparameters(parser)
     args = parser.parse_args()
 
-    model = BaselineVAE(input_size=1, hidden_size=32, latent_size=1)
+    model = BaselineVAE(input_size=2, hidden_size=32, latent_size=4)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     dataset = SimpleMultimodelDataset(args.dataset_size)
