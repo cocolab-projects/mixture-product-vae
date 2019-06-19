@@ -19,8 +19,8 @@ class SimpleMultimodelDataset(data.TensorDataset):
         self.number_of_examples = number_of_examples
         self.dataset = torch.zeros(number_of_examples, 1)
         mask = self.dataset.bernoulli(p=0.5).byte()
-        self.dataset[mask] = self.dataset[mask].normal_(mean=-5, std=1)
-        self.dataset[~mask] = self.dataset[~mask].normal_(mean=5, std=1)
+        self.dataset[mask] = self.dataset[mask].normal_(mean=-1, std=0.1)
+        self.dataset[~mask] = self.dataset[~mask].normal_(mean=1, std=0.1)
 
     def __len__(self) -> int:
         return self.number_of_examples
@@ -56,7 +56,7 @@ def reparameterization_trick(mean: torch.Tensor, logvar: torch.Tensor) -> torch.
 
 def log_pdf(x, reconstructed_mean, reconstructed_logvar) -> float:
     reconstructed_std = torch.exp(0.5 * reconstructed_logvar)
-    return -torch.sum(
+    return torch.sum(
         torch.distributions.normal.Normal(
             loc=reconstructed_mean,
             scale=reconstructed_std
@@ -104,8 +104,8 @@ def gaussian_kl_divergence(mean: torch.Tensor, logvar: torch.Tensor, weight: flo
 def ELBO(x: torch.Tensor, reconstructed_mean, reconstructed_logvar,
          latent_mean, latent_logvar) -> float:
     pdf_loss = log_pdf(x, reconstructed_mean, reconstructed_logvar)
-    kl_loss = gaussian_kl_divergence(latent_mean, latent_logvar, weight=1)
-    return torch.mean(pdf_loss - kl_loss)
+    kl_loss = gaussian_kl_divergence(latent_mean, latent_logvar, weight=100)
+    return torch.mean(-pdf_loss - kl_loss)
 
 
 class BaselineVAE(torch.nn.Module):
@@ -119,7 +119,7 @@ class BaselineVAE(torch.nn.Module):
         self.encoder_hidden_to_logvar = torch.nn.Linear(hidden_size, latent_size)
 
     def encode(self, x: torch.Tensor):
-        hidden = self.encoder_input_to_hidden(x)  # no nonlinearities
+        hidden = self.encoder_input_to_hidden(x)
         latent_mean = self.encoder_hidden_to_mean(hidden)
         latent_logvar = self.encoder_hidden_to_logvar(hidden)
         return latent_mean, latent_logvar
@@ -130,7 +130,7 @@ class BaselineVAE(torch.nn.Module):
 
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
         reconstructed_mean = latent
-        reconstructed_sigma = torch.ones_like(reconstructed_mean)
+        reconstructed_sigma = torch.ones_like(reconstructed_mean) * 0.1
         reconstructed_logvar = 2.0 * torch.log(reconstructed_sigma)
         reconstructed_logvar = reconstructed_logvar.to(latent.device)
         return reconstructed_mean, reconstructed_logvar
