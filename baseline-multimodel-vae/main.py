@@ -14,7 +14,7 @@ from pyro.distributions import MixtureOfDiagNormals
 
 class SimpleMultimodelDataset(data.TensorDataset):
 
-    def __init__(self, number_of_examples) -> None:
+    def __init__(self, number_of_examples: int) -> None:
         '''
         Args:
         Returns:
@@ -28,7 +28,7 @@ class SimpleMultimodelDataset(data.TensorDataset):
     def __len__(self) -> int:
         return self.number_of_examples
 
-    def __getitem__(self, index) -> torch.Tensor:
+    def __getitem__(self, index: int) -> torch.Tensor:
         return self.dataset[index]
 
 
@@ -57,7 +57,7 @@ def reparameterization_trick(mean: torch.Tensor, logvar: torch.Tensor) -> torch.
     return std * epsilon + mean
 
 
-def log_pdf(x, reconstructed_mean, reconstructed_logvar) -> float:
+def log_pdf(x, reconstructed_mean: torch.Tensor, reconstructed_logvar: torch.Tensor) -> float:
     reconstructed_std = torch.exp(0.5 * reconstructed_logvar)
     return torch.sum(
         torch.distributions.normal.Normal(
