@@ -19,7 +19,7 @@ class SimpleMultimodelDataset(data.TensorDataset):
         Returns:
         '''
         self.number_of_examples = number_of_examples
-        self.dataset = torch.zeros(number_of_examples, 2)
+        self.dataset = torch.zeros(number_of_examples, 4)
         mask = self.dataset.bernoulli(p=0.5).byte()
         self.dataset[mask] = self.dataset[mask].normal_(mean=-1, std=0.1)
         self.dataset[~mask] = self.dataset[~mask].normal_(mean=1, std=0.1)
@@ -124,8 +124,6 @@ class BaselineVAE(torch.nn.Module):
     def decode(self, latent_mean: torch.Tensor,
                latent_logvar: torch.Tensor) -> torch.Tensor:
 
-        print((0.5 * latent_logvar.view(-1, 2, 2)).exp())
-
         reconstructed_mean = MixtureOfDiagNormals(
             locs=latent_mean.view(-1, 2, 2),
             coord_scale=(0.5 * latent_logvar.view(-1, 2, 2)).exp(),
@@ -135,17 +133,11 @@ class BaselineVAE(torch.nn.Module):
 
         reconstructed_logvar = torch.log(torch.ones_like(reconstructed_mean) * 0.1)
         reconstructed_logvar = reconstructed_logvar.to(latent_mean.device)
+        return reconstructed_mean, reconstructed_logvar
 
     def reparameterize(self, latent_mean: torch.Tensor,
                        latent_logvar: torch.Tensor) -> torch.Tensor:
         return reparameterization_trick(latent_mean, latent_logvar)
-
-    def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        reconstructed_mean = latent
-        reconstructed_sigma = torch.ones_like(reconstructed_mean) * 0.1
-        reconstructed_logvar = 2.0 * torch.log(reconstructed_sigma)
-        reconstructed_logvar = reconstructed_logvar.to(latent.device)
-        return reconstructed_mean, reconstructed_logvar
 
     def forward(self, x: torch.Tensor):
         latent_mean, latent_logvar = self.encode(x)
@@ -159,7 +151,7 @@ def add_hyperparameters(parser: argparse.ArgumentParser) -> argparse.ArgumentPar
     parser.add_argument('--batch-size', default=32, type=int)
     parser.add_argument('--dataset-size', default=10000, type=int)
     parser.add_argument('--hidden-size', default=16, type=int)
-    parser.add_argument('--latent-size', default=4)
+    parser.add_argument('--latent-size', default=2)
     return parser
 
 
@@ -168,7 +160,7 @@ def main():
     parser = add_hyperparameters(parser)
     args = parser.parse_args()
 
-    model = BaselineVAE(input_size=2, hidden_size=32, latent_size=4)
+    model = BaselineVAE(input_size=2, hidden_size=32, latent_size=2)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     dataset = SimpleMultimodelDataset(args.dataset_size)
