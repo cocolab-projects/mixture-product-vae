@@ -4,6 +4,7 @@ import torch
 import pyro
 import argparse
 import torchvision
+from custom_dist import MixtureOfDiagNormals 
 
 from tqdm import tqdm
 
@@ -85,21 +86,18 @@ class MultimodelVAE(torch.nn.Module):
         logits = None
         if self.reparametrize_with == 'mixture-of-normal':
             temp = self.input_to_logits(image)
-            logits = torch.nn.functional.softmax(temp, dim=1)
+            logits = torch.nn.functional.softmax(temp, dim=1) + 1e-5
 
         if self.reparametrize_with == 'normal':
             return torch.distributions.normal.Normal(loc=mu, scale=std).rsample(), logits
         if self.reparametrize_with == 'mixture-of-normal':
-            try:
-                return pyro.distributions.MixtureOfDiagNormals(
-                    locs=mu.view(-1, self.mixture_size, 
-                        self.latent_size),
-                    coord_scale=std.view(-1, self.mixture_size,
-                        self.latent_size),
-                    component_logits=logits,
-                ).rsample(), logits
-            except RuntimeError:
-                breakpoint()
+            return MixtureOfDiagNormals(
+                locs=mu.view(-1, self.mixture_size, 
+                    self.latent_size),
+                coord_scale=(std.view(-1, self.mixture_size,
+                    self.latent_size)),
+                component_logits=logits,
+            ).rsample(), logits
 
     def encoder(self, image):
         mu, logvar = self.encode(image)
@@ -127,14 +125,33 @@ class MultimodelVAE(torch.nn.Module):
             loc=0, scale=1).log_prob(z), dim=1)
 
         std = (0.5 * logvar).exp()
-        mixture_prob = - pyro.distributions.MixtureOfDiagNormals(
+        mixture_prob = - MixtureOfDiagNormals(
             locs=mu.view(-1, self.mixture_size, self.latent_size),
-            coord_scale=std.view(-1, self.mixture_size, self.latent_size),
+            coord_scale=(std.view(-1, self.mixture_size, self.latent_size)),
             component_logits=logits).log_prob(z)
         return torch.mean(bce_loss + normal_prob - mixture_prob, dim=0)
 
 # kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
 # return torch.mean(bce_loss + (kl_loss * kl_weight), dim=0)
+
+import pdb
+import traceback
+
+
+class DetectAnomaly(torch.autograd.detect_anomaly):
+
+    def __init__(self):
+        super().__init__()
+
+    def __enter__(self):
+        super().__enter__()
+        return self
+
+    def __exit__(self, type, value, trace):
+        super().__exit__()
+        if isinstance(value, RuntimeError):
+            traceback.print_tb(trace)
+            pdb.set_trace()
 
 
 def train(epochs, model, optimizer, dataset_loader):
@@ -145,12 +162,13 @@ def train(epochs, model, optimizer, dataset_loader):
         print(f'Starting epoch {epoch + 1} of {epochs}...')
 
         for images, _labels in tqdm(dataset_loader):
-            recon, z, mu, logvar, logits = model(images)
-            loss = model.eblo_loss(images, z, recon, mu, logvar, logits)
-            total_loss += loss.item()
-            running_average.update(loss.item())
-            loss.backward()
-            optimizer.step()
+            with torch.autograd.detect_anomaly():
+                recon, z, mu, logvar, logits = model(images)
+                loss = model.eblo_loss(images, z, recon, mu, logvar, logits)
+                total_loss += loss.item()
+                running_average.update(loss.item())
+                loss.backward()
+                optimizer.step()
 
         print(f'\t> ELBO: {loss}')
         print(f'\t> Running Average ELBO: {running_average.avg}')
