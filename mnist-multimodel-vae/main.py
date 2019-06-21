@@ -70,6 +70,8 @@ class MultimodelVAE(torch.nn.Module):
     def __init__(self, input_size, hidden_size, latent_size,
                  reparametrize_with: str = 'normal', mixture_size: int = 10):
         super().__init__()
+        if reparametrize_with == 'normal':
+            mixture_size = 1
 
         self.input_size = input_size
         self.latent_size = latent_size
@@ -109,27 +111,28 @@ class MultimodelVAE(torch.nn.Module):
 
     def forward(self, image):
         mu, logvar = self.encoder(image)
-
         z, logits = self.reparametrize(mu, logvar, logits=None, image=image)
         recon = self.decoder(z)
         return recon, z, mu, logvar, logits
 
-    def eblo_loss(self, orig, z, recon, mu, logvar, logits, kl_weight=1):
+    def elbo_loss(self, orig, z, recon, mu, logvar, logits, kl_weight=1):
         bce_loss = torch.sum(
             torch.nn.functional.binary_cross_entropy(
                 torch.sigmoid(recon),
                 orig,
                 reduction='none'), dim=1)
-    
-        normal_prob = - torch.sum(torch.distributions.normal.Normal(
-            loc=0, scale=1).log_prob(z), dim=1)
-
-        std = (0.5 * logvar).exp()
-        mixture_prob = - MixtureOfDiagNormals(
-            locs=mu.view(-1, self.mixture_size, self.latent_size),
-            coord_scale=(std.view(-1, self.mixture_size, self.latent_size)),
-            component_logits=logits).log_prob(z)
-        return torch.mean(bce_loss + normal_prob - mixture_prob, dim=0)
+        if self.reparametrize_with == 'mixture-of-normal':
+            normal_prob = - torch.sum(torch.distributions.normal.Normal(
+                loc=0, scale=1).log_prob(z), dim=1)
+            std = (0.5 * logvar).exp()
+            mixture_prob = - MixtureOfDiagNormals(
+                locs=mu.view(-1, self.mixture_size, self.latent_size),
+                coord_scale=(std.view(-1, self.mixture_size, self.latent_size)),
+                component_logits=logits).log_prob(z)
+            return torch.mean(bce_loss + normal_prob - mixture_prob, dim=0)
+        else:
+            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+            return torch.mean(bce_loss + (kl_loss * kl_weight), dim=0)
 
 # kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
 # return torch.mean(bce_loss + (kl_loss * kl_weight), dim=0)
@@ -154,32 +157,33 @@ class DetectAnomaly(torch.autograd.detect_anomaly):
             pdb.set_trace()
 
 
-def train(epochs, model, optimizer, dataset_loader):
+def train(epochs, model, optimizer, device, dataset_loader):
     for epoch in range(epochs):
-        total_loss = 0
         running_average = AverageMeter()
 
         print(f'Starting epoch {epoch + 1} of {epochs}...')
 
         for images, _labels in tqdm(dataset_loader):
-            with torch.autograd.detect_anomaly():
-                recon, z, mu, logvar, logits = model(images)
-                loss = model.eblo_loss(images, z, recon, mu, logvar, logits)
-                total_loss += loss.item()
-                running_average.update(loss.item())
-                loss.backward()
-                optimizer.step()
+            images = images.to(device)
+            recon, z, mu, logvar, logits = model(images)
+            loss = model.elbo_loss(images, z, recon, mu, logvar, logits)
+            running_average.update(loss.item())
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
         print(f'\t> ELBO: {loss}')
         print(f'\t> Running Average ELBO: {running_average.avg}')
 
 
 def main():
-    model = MultimodelVAE(784, 512, 32, reparametrize_with='mixture-of-normal',
+    device = torch.device('cuda')
+    model = MultimodelVAE(784, 400, 5, reparametrize_with='mixture-of-normal',
                           mixture_size=10)
+    model = model.to(device)
     epochs = 10
     batch_size = 64
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     train_loader   = torch.utils.data.DataLoader(
         torchvision.datasets.MNIST('./data', train=True, download=True,
         transform=torchvision.transforms.Compose([
@@ -189,7 +193,7 @@ def main():
             )
         ])),
     batch_size=batch_size, shuffle=True)
-    train(epochs, model, optimizer, dataset_loader=train_loader)
+    train(epochs, model, optimizer, device, dataset_loader=train_loader)
 
 
 if __name__ == '__main__':
