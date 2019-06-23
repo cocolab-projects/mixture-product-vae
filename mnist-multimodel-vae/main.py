@@ -134,28 +134,6 @@ class MultimodelVAE(torch.nn.Module):
             kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
             return torch.mean(bce_loss + (kl_loss * kl_weight), dim=0)
 
-# kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
-# return torch.mean(bce_loss + (kl_loss * kl_weight), dim=0)
-
-import pdb
-import traceback
-
-
-class DetectAnomaly(torch.autograd.detect_anomaly):
-
-    def __init__(self):
-        super().__init__()
-
-    def __enter__(self):
-        super().__enter__()
-        return self
-
-    def __exit__(self, type, value, trace):
-        super().__exit__()
-        if isinstance(value, RuntimeError):
-            traceback.print_tb(trace)
-            pdb.set_trace()
-
 
 def train(epochs, model, optimizer, device, dataset_loader):
     for epoch in range(epochs):
@@ -184,15 +162,17 @@ def main():
     epochs = 10
     batch_size = 64
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
-    train_loader   = torch.utils.data.DataLoader(
+
+    train_loader = torch.utils.data.DataLoader(
         torchvision.datasets.MNIST('./data', train=True, download=True,
-        transform=torchvision.transforms.Compose([
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Lambda(
-                lambda x: torch.squeeze(x.view(-1, 784))
-            )
-        ])),
-    batch_size=batch_size, shuffle=True)
+            transform=torchvision.transforms.Compose([
+                torchvision.transforms.ToTensor(),
+                torchvision.transforms.Lambda(
+                    lambda x: torch.squeeze(x.view(-1, 784))
+                )
+            ])),
+        batch_size=batch_size, shuffle=True)
+
     train(epochs, model, optimizer, device, dataset_loader=train_loader)
 
 
