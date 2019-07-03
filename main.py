@@ -212,21 +212,34 @@ class MultimodelVAE(torch.nn.Module):
         recon = self.decode(z)
         return recon, z, mu, logvar, self.logits
 
+    def elbo(self, orig, z, recon, mu, logvar, logits, number_of_mixtures,
+            latent_size, kl_weight=1):
+
+        recon_loss = bernoulli_log_pdf(orig.flatten(), mu.flatten())
+        kl_diverg = kl_divergence(
+            mu,
+            logvar,
+            z,
+            logits,
+            number_of_mixtures,
+            latent_size,
+            reparametrize_with=self.reparametrize_with,
+        )
+        return torch.mean(
+        recon_loss + (kl_diverg * kl_weight), dim=0)
+
 
 def kl_divergence_normal(mu, logvar, z):
     return -0.5 * torch.sum(
         1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
 
 
-def kl_divergence_mixture(mu, logvar, z, logits,
-                          number_of_mixtures,
-                          latent_size):
+def kl_divergence_mixture(mu, logvar, z, logits, number_of_mixtures, latent_size):
     normal_prob = - torch.sum(
         torch.distributions.normal.Normal(
             loc=0,
             scale=1).log_prob(z), dim=1)
     std = (0.5 * logvar).exp()
-    # double negative?
     mixture_prob = - pyro.distributions.MixtureOfDiagNormals(
         locs=mu.view(-1, number_of_mixtures, latent_size),
         coord_scale=std.view(-1, number_of_mixtures, latent_size),
