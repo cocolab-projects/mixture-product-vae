@@ -325,18 +325,12 @@ def run(
         channels: int,
         number_of_mixtures: int,
         log_interval: int,
-        runs: int,
     ):
 
     image_size = 32
-    input_channels = 1
-    if dataset == 'CIFAR10':
-        input_channels = 3
+    input_channels = 3 if dataset == 'CIFAR10' else 1
     
-    device = 'cpu'
-
-    if torch.cuda.is_available():
-        device = 'cuda'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     train_loader, val_loader = get_data_loaders(
         dataset,
