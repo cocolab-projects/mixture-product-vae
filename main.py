@@ -157,24 +157,25 @@ class MultimodelVAE(torch.nn.Module):
         self.mixture_size = mixture_size
 
         self.encoder = ImageEncoder(
-            input_channels=input_channels, image_size=image_size, z_dim=z_dim, n_filters=channels,
-            number_of_mixtures=mixture_size)
+            input_channels=input_channels, image_size=image_size, z_dim=z_dim,
+            n_filters=channels, number_of_mixtures=mixture_size)
         self.decoder = ImageDecoder(
-            output_channels=input_channels, image_size=image_size, z_dim=z_dim, n_filters=channels)
+            output_channels=input_channels, image_size=image_size, z_dim=z_dim,
+            n_filters=channels)
 
         if reparametrize_with == 'mixture_of_normal':
             self.input_to_logits = torch.nn.Linear(
                 self.input_channels * self.image_size * self.image_size, mixture_size)
         self.logits = None
-    
+
     def encode(self, image):
         mu, logvar = self.encoder(image)
         return mu, logvar
-    
+
     def decode(self, z):
         recon = self.decoder(z)
         return recon
-    
+
     def reparametrize(self, mu, logvar, logits=None, image=None):
         std = (0.5 * logvar).exp()
         logits = None
