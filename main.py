@@ -357,82 +357,165 @@ def run(
     if number_of_mixtures > 1:
         reparametrize_with = 'mixture_of_normal'
 
-    for run in range(runs):
-        model = MultimodelVAE( 
-            input_channels=input_channels,
-            image_size=image_size,
-            channels=channels,
-            z_dim=latent_size,
-            reparametrize_with=reparametrize_with,
-            mixture_size=number_of_mixtures,
+    model = MultimodelVAE(
+        input_channels=input_channels,
+        image_size=image_size,
+        channels=channels,
+        z_dim=latent_size,
+        reparametrize_with=reparametrize_with,
+        mixture_size=number_of_mixtures,
+    )
+
+    model = model.to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    def step(engine, batch):
+        images, _labels = batch
+        images.to(device)
+        optimizer.zero_grad()
+        recon, z, mu, logvar, logits = model(images)
+
+        loss = elbo(
+            orig=images,
+            z=z,
+            recon=recon,
+            mu=mu,
+            logvar=logvar,
+            logits=logits,
+            number_of_mixtures=number_of_mixtures,
+            latent_size=latent_size,
+            kl_weight=1,
+            reconstruction_with=reparametrize_with,
         )
-        
-        model = model.to(device)
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        loss.backward()
+        optimizer.step()
 
-        done = False
+        return {'ELBO': loss.item()}
 
-        for epoch in range(epochs):
-            last_elbo = float('inf')
-            patience = 5
-            average_elbo = AverageMeter()
-            print(f'Epoch {epoch + 1} of {epochs}...')
-            for current_batch, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
-                images, _labels = batch
-                images = images.to(device)
+    trainer = Engine(step)
+    checkpointer_handler = ModelCheckpoint(
+        checkpoint_directory, 'mpvae', save_interval=1, n_saved=10, require_empty=False)
+    timer = Time(average=True)
 
-                optimizer.zero_grad()
+    RunningAverage(output_transform=lambda x: x['ELBO']).attach(trainer, 'ELBO')
+    progress_bar = ProgressBar()
+    progress_bar.attach(trainer, metric_names=['ELBO'])
 
-                recon, z, mu, logvar, logits = model(images)
+    @trainer.on(Events.ITERATION_COMPLETED)
+    def log_iteration(engine):
+        if (engine.state.iteration - 1) % log_interval:
+            epoch = engine.state.epoch
+            training_batchs = len(train_loader)
+            current_batch_index = engine.state.iteration % training_batchs
 
-                loss = elbo(
-                    orig=images,
-                    z=z,
-                    recon=recon,
-                    mu=mu,
-                    logvar=logvar,
-                    logits=logits,
-                    number_of_mixtures=number_of_mixtures,
-                    latent_size=latent_size,
-                    kl_weight=1,
-                    reconstruction_with=reparametrize_with,
-                )
-                average_elbo.update(loss.item())
+            message = '''
+                f[{epoch}/{epochs}][{current_batch_index}/{training_batches}]
+            '''
 
-                loss.backward()
-                optimizer.step()
+            log_filename = pathlib.Path(logs_path) / logs_filename
+            row = '{engine.state.iteration}, {engine}'
 
-            if average_elbo.val < last_elbo:
-                patience -= 1
-                if patience == 0:
-                    done = True
-            else:
-                last_elbo = average_elbo.val 
-            
-            print(f'Average ELBO: {average_elbo.avg}')
+            progress_bar.log_message(message)
 
-            if done or (epoch == (epochs - 1)):
-                val_loss = compute_validation_loss(latent_size, model, val_loader, device,
-                                            number_of_mixtures=number_of_mixtures, n=10)
-                print(f'Valuation Loss {val_loss}')
+    @trainer.on(Events.EXCEPTION_RAISED)
+    def handle_exception(engine, exception):
+        if isinstance(exception, KeyboardInterrupt) and (engine.state.iteration > 1):
+            engine.terminate()
+            warnings.warn('KeyboardInterrupt caught. Exiting gracefully.')
 
-                with open(f'{dataset}_{number_of_mixtures}_{run}', 'w') as f:
-                    f.write(str(val_loss))
-                break
+            checkpoint_handler(engine, {
+                'model_exception': model,
+            })
+        else:
+            raise exception
+
+    @trainer.on(Events.EPOCH_COMPLETED)
+    def print_times(engine):
+        progress_bar.log_message(
+            f'''
+            Epoch {engine.state.epoch} done. Time per a batch {timer.value():.3f[s]}
+            '''
+        )
+        time.reset()
+
+    @trainer.on(Events.COMPLETED)
+    def save_test_log_likelyhood(engine):
+        test_log_likelyhoood = compute_validation_loss(
+            latent_size, model, val_loader, device,
+            number_of_mixtures=number_of_mixtures, n=10)
+        print(f'Valuation Loss {test_log_likelyhoood}')
+
+    trainer.add_event_handler(event_name=Events.EPOCH_COMPLETED,
+                              handler=checkpoint_handler, to_save={
+                                  'model': model,
+                              })
+    timer.attach(
+        trainer,
+        start=Events.EPOCH_STARTED,
+        resume=Events.ITERATION_STARTED,
+        pause=Events.ITERATION_COMPLETED,
+        step=Events.ITERATION_COMPLETED,
+    )
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
 
-    run(
-        batch_size=64,
-        dataset='MNIST',
-        val_batch_size=200,
-        epochs=200,
-        lr=2e-4,
-        latent_size=2,
-        channels=16,
-        number_of_mixtures=1,
-        log_interval=10,
-        runs=3,
-    )
+    # Experiment Parameters
+    parser.add_argument('--experiments-directory', type=str, default='./experiments')
+    parser.add_argument('--log-directory', type=str, default='logs')
+    parser.add_argument('--checkpoint-directory', type=str, default='checkpoints')
+    parser.add_argument('--experiment-name', type=str, default='default')
+    parser.add_argument('--log-interval', type=int, default=1)
+    parser.add_argument('--runs', type=int, default=1)
+
+    # Hyperparameters
+    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--val_batch_size', type=int, default=200)
+    parser.add_argument('--dataset', type=str, default='MNIST')
+    parser.add_argument('--lr', type=float, default=2e-4)
+    parser.add_argument('--latent-size', type=int, default=2)
+    parser.add_argument('--channels', type=int, default=16)
+    parser.add_argument('--number-of-mixtures', type=int, default=1)
+
+    parser.add_argument('--learned-mixture', type=bool, default=False)
+    parser.add_argument('--fixed-mixture', type=bool, default=False)
+    parser.add_argument('--dynamic-mixture', type=bool, default=True)
+
+    args = parser.parse_args()
+
+    experiments_directory = pathlib.Path(args.experiments_directory)
+
+    current_experiment_directory = experiments_directory / args.experiment_name
+    log_directory = current_experiment_directory / args.log_directory
+    checkpoint_directory = current_experiment_directory / args.checkpoint_directory
+
+    if (pathlib.Path(args.experiments_directory) / args.experiment_name).exists():
+        # is this really a ValueError?
+        raise ValueError(
+            f'Experiment with name {args.experiment_name} exists! Aborting.')
+
+    for current_run in range(args.runs):
+        if args.runs == 1:
+            print('Starting experiment...')
+        else:
+            print(f'Starting experiment run {current_run} of {args.runs}...')
+
+        run(
+            current_run=current_run,
+            log_directory=args.log_directory,
+            checkpoint_directory=args.checkpoint_directory,
+            log_interval=args.log_interval,
+
+            batch_size=args.batch_size,
+            val_batch_size=args.val_batch_size,
+            dataset=args.dataset,
+            epochs=args.epoch,
+            lr=args.lr,
+            latent_size=args.latent_size,
+            channels=args.channels,
+            number_of_mixtures=args.number_of_mixtures,
+        )
