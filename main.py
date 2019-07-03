@@ -5,7 +5,8 @@ import torch
 import torchvision
 
 from ignite.contrib.handlers import ProgressBar
-from ignite.engine import Engine, events
+from ignite.engine import Engine
+from ignite.engine import Events
 from ignite.handlers import ModelCheckpoint, Timer
 from ignite.metrics import RunningAverage
 from tqdm import tqdm
