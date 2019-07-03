@@ -307,6 +307,28 @@ def compute_validation_loss(latent_size, model, val_loader, device,
     return val_loss / total_examples
 
 
+def test_elbo(model, val_data_loader, latent_size, reparametrize_with):
+    total_loss = 0
+    with torch.no_grad():
+        for image, _labels in tqdm(dataset):
+            recon, z, mu, logvar, self.logits = model(image)
+            loss = elbo(
+                orig=images,
+                z=z,
+                recon=recon,
+                mu=mu,
+                logvar=logvar,
+                logits=logits,
+                number_of_mixtures=number_of_mixtures,
+                latent_size=latent_size,
+                kl_weight=1,
+                reconstruction_with=reparametrize_with,
+            )
+            total_loss += loss
+
+    return total_loss / len(val_data_loader)
+
+
 def run(
         batch_size: int,
         dataset: str,
