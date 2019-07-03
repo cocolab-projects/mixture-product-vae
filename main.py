@@ -259,36 +259,13 @@ def kl_divergence(mu, logvar, z, logits, number_of_mixtures,
                                      latent_size)
 
 
-def elbo(orig, z, recon, mu, logvar, logits, number_of_mixtures,
-         latent_size, kl_weight=1, reconstruction_with='normal'):
-
-    bce_loss = torch.sum(
-        torch.nn.functional.binary_cross_entropy(
-            input=recon.view(-1, 32 * 32),
-            target=orig.view(-1, 32 * 32),
-            reduction='none'
-        ),
-        dim=1,
-    )
-    kl_diverg = kl_divergence(
-        mu,
-        logvar,
-        z,
-        logits,
-        number_of_mixtures,
-        latent_size,
-        reparametrize_with=reconstruction_with,
-    )
-    return torch.mean(
-       bce_loss + (kl_diverg * kl_weight), dim=0)
-
-
 def bernoulli_log_pdf(x, mu):
     mu = torch.clamp(mu, 1e-7, 1.-1e-7)
     return torch.sum(x * torch.log(mu) + (1. - x) * torch.log(1. - mu), dim=1)
 
 
-def compute_validation_loss(latent_size, model, val_loader, device, number_of_mixtures=1, n=1):
+def compute_validation_loss(latent_size, model, val_loader, device,
+                            number_of_mixtures=1, n=1):
 
     val_loss = 0
     prior_distribution = torch.distributions.Normal(0, 1)
