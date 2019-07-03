@@ -301,7 +301,6 @@ def compute_validation_loss(latent_size, model, val_loader, device, number_of_mi
                 image = torch.unsqueeze(image, dim=0)
                 mu, logvar = model.encode(image)
                 std = (0.5 * logvar).exp()
-                # check if mxiture, if so use MixtureOfDiagNormsl
                 encoder_distribution = None
                 if model.reparametrize_with == 'normal':
                     encoder_distribution = torch.distributions.Normal(mu, std)
