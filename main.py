@@ -141,12 +141,12 @@ class MultimodelVAE(torch.nn.Module):
 
     def __init__(
         self,
-        input_channels,
-        image_size,
-        channels,
-        z_dim,
-        reparametrize_with,
-        mixture_size,
+        input_channels: int,
+        image_size: int,
+        channels: int,
+        z_dim: int,
+        reparametrize_with: int,
+        mixture_size: int,
     ):
         super().__init__()
         self.z_dim = z_dim
