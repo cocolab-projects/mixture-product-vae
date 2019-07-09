@@ -3,30 +3,16 @@ import pathlib
 import pyro
 import torch
 import torchvision
+import numpy as np
 
 from ignite.contrib.handlers import ProgressBar
 from ignite.engine import Engine
 from ignite.engine import Events
-from ignite.handlers import ModelCheckpoint, Timer
+from ignite.handlers import ModelCheckpoint, Timer, EarlyStopping
 from ignite.metrics import RunningAverage
 from tqdm import tqdm
 
-
-def gen_32_conv_output_dim(s):
-    s = get_conv_output_dim(s, 2, 0, 2)
-    s = get_conv_output_dim(s, 2, 0, 2)
-    s = get_conv_output_dim(s, 2, 0, 2)
-    return s
-
-
-def get_conv_output_dim(I, K, P, S):
-    # I = input height/length
-    # K = filter size
-    # P = padding
-    # S = stride
-    # O = output height/length
-    O = (I - K + 2 * P) / float(S) + 1
-    return int(O)
+from models import bernoulli_log_pdf, MultimodelVAE
 
 
 def get_data_loaders(dataset_name, train_batch_size, val_batch_size):
@@ -64,204 +50,19 @@ def get_data_loaders(dataset_name, train_batch_size, val_batch_size):
     return train_loader, val_loader
 
 
-class ImageEncoder(torch.nn.Module):
+def get_num_interval(k):
+    n = 0
+    while math.factorial(n) < k:
+        n += 1
+    return n
 
-    def __init__(self, input_channels, image_size, z_dim, n_filters, number_of_mixtures):
-
-        super().__init__()
-
-        self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(input_channels, n_filters, 2, 2, padding=0),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(n_filters, n_filters * 2, 2, 2, padding=0),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(n_filters * 2, n_filters * 4, 2, 2, padding=0),
-            torch.nn.ReLU(),
-        )
-
-        cout = gen_32_conv_output_dim(image_size)
-
-        self.fc = torch.nn.Linear(n_filters * 4 * cout**2, z_dim * 2 * number_of_mixtures)
-        self.cout = cout
-        self.n_filters = n_filters
-
-    def forward(self, image):
-
-        batch_size = image.size(0)
-
-        out = self.conv(image)
-        out = out.view(batch_size, self.n_filters * 4 * self.cout**2)
-
-        z_params = self.fc(out)
-
-        z_mu, z_logvar = torch.chunk(z_params, 2, dim=1)
-
-        return z_mu, z_logvar
-
-
-class ImageDecoder(torch.nn.Module):
-
-    def __init__(self, output_channels, image_size, z_dim, n_filters):
-
-        super().__init__()
-
-        self.conv = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(n_filters * 4, n_filters * 4, 2, 2, padding=0),
-            torch.nn.ReLU(),
-            torch.nn.ConvTranspose2d(n_filters * 4, n_filters * 2, 2, 2, padding=0),
-            torch.nn.ReLU(),
-            torch.nn.ConvTranspose2d(n_filters * 2, n_filters, 2, 2, padding=0),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(n_filters, output_channels, 1, 1, padding=0),
-        )
-
-        cout = gen_32_conv_output_dim(image_size)
-
-        self.fc = torch.nn.Sequential(
-            torch.nn.Linear(z_dim, n_filters * 4 * cout**2),
-            torch.nn.ReLU()
-        )
-
-        self.cout = cout
-        self.n_filters = n_filters
-        self.output_channels = output_channels
-        self.image_size = image_size
-
-    def forward(self, z):
-        batch_size = z.size(0)
-        out = self.fc(z)
-        out = out.view(batch_size, self.n_filters * 4, self.cout, self.cout)
-        out = self.conv(out)
-        x_logits = out.view(batch_size, self.output_channels, self.image_size, self.image_size)
-        x_mu = torch.sigmoid(x_logits)
-        return x_mu
-
-
-class MultimodelVAE(torch.nn.Module):
-
-    def __init__(
-        self,
-        input_channels: int,
-        image_size: int,
-        channels: int,
-        z_dim: int,
-        reparametrize_with: int,
-        mixture_size: int,
-    ):
-        super().__init__()
-        self.z_dim = z_dim
-        self.input_channels = input_channels
-        self.image_size = image_size
-        self.hidden_channels = channels
-        self.reparametrize_with = reparametrize_with
-        self.mixture_size = mixture_size
-
-        self.encoder = ImageEncoder(
-            input_channels=input_channels, image_size=image_size, z_dim=z_dim,
-            n_filters=channels, number_of_mixtures=mixture_size)
-        self.decoder = ImageDecoder(
-            output_channels=input_channels, image_size=image_size, z_dim=z_dim,
-            n_filters=channels)
-
-        if reparametrize_with == 'mixture_of_normal':
-            self.input_to_logits = torch.nn.Linear(
-                self.input_channels * self.image_size * self.image_size, mixture_size)
-        self.logits = None
-
-    def encode(self, image):
-        mu, logvar = self.encoder(image)
-        return mu, logvar
-
-    def decode(self, z):
-        recon = self.decoder(z)
-        return recon
-
-    def reparametrize(self, mu, logvar, logits=None, image=None):
-        std = (0.5 * logvar).exp()
-        logits = None
-        if self.reparametrize_with == 'normal':
-            return torch.distributions.normal.Normal(loc=mu, scale=std).rsample(), self.logits
-        if self.reparametrize_with == 'mixture_of_normal':
-            batch_size = mu.size(0)
-            temp = self.input_to_logits(
-                image.view(batch_size, self.input_channels * self.image_size * self.image_size))
-            self.logits = torch.nn.functional.softmax(temp, dim=1) 
-            return pyro.distributions.MixtureOfDiagNormals(
-                locs=mu.view(-1, self.mixture_size, 
-                    self.z_dim),
-                coord_scale=(std.view(-1, self.mixture_size,
-                    self.z_dim)),
-                component_logits=self.logits,
-            ).rsample(), self.logits
-
-    def forward(self, image):
-        if self.reparametrize_with == 'mixture_of_normal':
-            self.logits = self.input_to_logits(
-                image.view(-1, self.input_channels * self.image_size * self.image_size))
-        else:
-            self.logits = None
-
-        mu, logvar = self.encode(image)
-
-        z, logits = self.reparametrize(
-            mu,
-            logvar,
-            logits=self.logits,
-            image=image
-        )
-        recon = self.decode(z)
-        return recon, z, mu, logvar, self.logits
-
-    def elbo(self, orig, z, recon, mu, logvar, logits, number_of_mixtures,
-            latent_size, kl_weight=1):
-
-        recon_loss = bernoulli_log_pdf(orig.flatten(), mu.flatten())
-        kl_diverg = kl_divergence(
-            mu,
-            logvar,
-            z,
-            logits,
-            number_of_mixtures,
-            latent_size,
-            reparametrize_with=self.reparametrize_with,
-        )
-        return torch.mean(
-        recon_loss + (kl_diverg * kl_weight), dim=0)
-
-
-def kl_divergence_normal(mu, logvar, z):
-    return -0.5 * torch.sum(
-        1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
-
-
-def kl_divergence_mixture(mu, logvar, z, logits, number_of_mixtures, latent_size):
-    normal_prob = - torch.sum(
-        torch.distributions.normal.Normal(
-            loc=0,
-            scale=1).log_prob(z), dim=1)
-    std = (0.5 * logvar).exp()
-    mixture_prob = - pyro.distributions.MixtureOfDiagNormals(
-        locs=mu.view(-1, number_of_mixtures, latent_size),
-        coord_scale=std.view(-1, number_of_mixtures, latent_size),
-        component_logits=torch.nn.functional.softmax(logits, dim=1)
-    ).log_prob(z)
-    result = normal_prob - mixture_prob
-    return result
-
-
-def kl_divergence(mu, logvar, z, logits, number_of_mixtures,
-                  latent_size, reparametrize_with):
-    if reparametrize_with == 'normal':
-        return kl_divergence_normal(mu, logvar, z)
-    elif reparametrize_with == 'mixture_of_normal':
-        return kl_divergence_mixture(mu, logvar, z, logits,
-                                     number_of_mixtures,
-                                     latent_size)
-
-
-def bernoulli_log_pdf(x, mu):
-    mu = torch.clamp(mu, 1e-7, 1.-1e-7)
-    return torch.sum(x * torch.log(mu) + (1. - x) * torch.log(1. - mu), dim=1)
+def get_fixed_init(n, a, b):
+    interval = np.linspace(a, b, n + 1)
+    inits = []
+    for i in range(0, len(interval) - 1):
+        for j in range(i + 1, len(interval)):
+            inits.append([interval[i], interval[j]])
+          return np.array(inits)
 
 
 def compute_validation_loss(latent_size, model, val_loader, device,
@@ -284,6 +85,7 @@ def compute_validation_loss(latent_size, model, val_loader, device,
                 if model.reparametrize_with == 'normal':
                     encoder_distribution = torch.distributions.Normal(mu, std)
                 else:
+                    # breaks for 3 channels images
                     encoder_distribution = pyro.distributions.MixtureOfDiagNormals(
                         locs=mu.view(-1, number_of_mixtures, latent_size),
                         coord_scale=std.view(-1, number_of_mixtures, latent_size),
@@ -312,17 +114,14 @@ def test_elbo(model, val_data_loader, latent_size, reparametrize_with):
     with torch.no_grad():
         for image, _labels in tqdm(dataset):
             recon, z, mu, logvar, self.logits = model(image)
-            loss = elbo(
+            loss = model.elbo(
                 orig=images,
                 z=z,
                 recon=recon,
                 mu=mu,
                 logvar=logvar,
                 logits=logits,
-                number_of_mixtures=number_of_mixtures,
-                latent_size=latent_size,
                 kl_weight=1,
-                reconstruction_with=reparametrize_with,
             )
             total_loss += loss
 
@@ -330,20 +129,29 @@ def test_elbo(model, val_data_loader, latent_size, reparametrize_with):
 
 
 def run(
-        batch_size: int,
-        dataset: str,
-        val_batch_size: int,
-        epochs: int,
-        lr: float,
-        latent_size: int,
-        channels: int,
-        number_of_mixtures: int,
-        log_interval: int,
+        # Experiment Parameters
+        current_run,
+        log_directory,
+        checkpoint_directory,
+        log_interval,
+
+        # Hyperparameters
+        batch_size,
+        val_batch_size,
+        dataset,
+        epochs,
+        lr,
+        latent_size,
+        channels,
+        number_of_mixtures,
     ):
+
+    log_file = open(log_directory / 'train_log.tsv', 'w')
+    log_file.write('ITERATION\tELBO_RUNNING_AVERAGE\n')
 
     image_size = 32
     input_channels = 3 if dataset == 'CIFAR10' else 1
-    
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     train_loader, val_loader = get_data_loaders(
@@ -383,10 +191,6 @@ def run(
             mu=mu,
             logvar=logvar,
             logits=logits,
-            number_of_mixtures=number_of_mixtures,
-            latent_size=latent_size,
-            kl_weight=1,
-            reconstruction_with=reparametrize_with,
         )
 
         loss.backward()
@@ -396,7 +200,9 @@ def run(
 
     trainer = Engine(step)
     checkpointer_handler = ModelCheckpoint(
-        checkpoint_directory, 'mpvae', save_interval=1, n_saved=10, require_empty=False)
+        checkpoint_directory, 'mpvae', save_interval=1, n_saved=10,
+        require_empty=False
+    )
     timer = Time(average=True)
 
     RunningAverage(output_transform=lambda x: x['ELBO']).attach(trainer, 'ELBO')
@@ -414,8 +220,7 @@ def run(
                 f[{epoch}/{epochs}][{current_batch_index}/{training_batches}]
             '''
 
-            log_filename = pathlib.Path(logs_path) / logs_filename
-            row = '{engine.state.iteration}, {engine}'
+            row = '{engine.state.iteration}, {engine.state.metrics["ELBO"]}'
 
             progress_bar.log_message(message)
 
@@ -447,10 +252,15 @@ def run(
             number_of_mixtures=number_of_mixtures, n=10)
         print(f'Valuation Loss {test_log_likelyhoood}')
 
+    @trainer.on(Events.COMPLETED)
+    def close_log_file(engine):
+        log_file.close()
+
     trainer.add_event_handler(event_name=Events.EPOCH_COMPLETED,
                               handler=checkpoint_handler, to_save={
                                   'model': model,
                               })
+
     timer.attach(
         trainer,
         start=Events.EPOCH_STARTED,
@@ -480,7 +290,6 @@ if __name__ == '__main__':
     parser.add_argument('--latent-size', type=int, default=2)
     parser.add_argument('--channels', type=int, default=16)
     parser.add_argument('--number-of-mixtures', type=int, default=1)
-
     parser.add_argument('--learned-mixture', type=bool, default=False)
     parser.add_argument('--fixed-mixture', type=bool, default=False)
     parser.add_argument('--dynamic-mixture', type=bool, default=True)
@@ -493,10 +302,11 @@ if __name__ == '__main__':
     log_directory = current_experiment_directory / args.log_directory
     checkpoint_directory = current_experiment_directory / args.checkpoint_directory
 
-    if (pathlib.Path(args.experiments_directory) / args.experiment_name).exists():
+    if (current_experiment_directory).exists():
         # is this really a ValueError?
         raise ValueError(
             f'Experiment with name {args.experiment_name} exists! Aborting.')
+    current_experiment_directory.mkdir(parents=True, exists_ok=False)
 
     for current_run in range(args.runs):
         if args.runs == 1:
@@ -505,11 +315,13 @@ if __name__ == '__main__':
             print(f'Starting experiment run {current_run} of {args.runs}...')
 
         run(
+            # Experiment Parameters
             current_run=current_run,
             log_directory=args.log_directory,
             checkpoint_directory=args.checkpoint_directory,
             log_interval=args.log_interval,
 
+            # Hyperparameters
             batch_size=args.batch_size,
             val_batch_size=args.val_batch_size,
             dataset=args.dataset,
