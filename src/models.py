@@ -96,7 +96,6 @@ def gaussian_log_pdf(x, mu, logvar):
 
 
 def isotropic_gaussian_log_pdf(x):
-    log_q_z_i_given_x = 
     mu = torch.zeros_like(x)
     logvar = torch.zeros_like(x)
     return gaussian_log_pdf(x, mu, logvar)
@@ -161,7 +160,7 @@ class ImageEncoder(nn.Module):
         # 2 bc we will extract mu and logvar using one network
         self.fc_latents = nn.Linear(n_filters * 4 * cout**2, z_dim * 2 * n_mixtures)
 
-        if self.n_mixtures > 1:
+        if n_mixtures > 1:
             # we need a layer to spit out logits!
             self.fc_logits = nn.Linear(n_filters * 4 * cout**2, n_mixtures)
 
@@ -194,7 +193,7 @@ class ImageEncoder(nn.Module):
         # so we explicitly store the mixture number
         # NOTE: this will be 1 if normal VAE
         z_mu = z_mu.view(batch_size, self.n_mixtures, self.z_dim)
-        z_logvar = z_logvar.view(batch_size, self.n_mixtures, self.z_dim))
+        z_logvar = z_logvar.view(batch_size, self.n_mixtures, self.z_dim)
 
         return z_mu, z_logvar, logits
 
@@ -239,7 +238,7 @@ class ImageDecoder(nn.Module):
         )
 
         cout = gen_32_conv_output_dim(image_size)
-        self.fc = nn.Linear(z_dim, n_filters * 4 * cout**2),
+        self.fc = nn.Linear(z_dim, n_filters * 4 * cout**2)
 
         self.cout = cout
         self.n_filters = n_filters
@@ -368,6 +367,7 @@ class MixtureVAE(nn.Module):
             else:
                 raise Exception('prior {} not supported.'.format(self.prior))
 
+        kl_div = torch.sum(kl_div, dim=1)
         return kl_div
 
     def elbo(self, x, x_mu, z, z_mu, z_logvar, logits):
@@ -381,7 +381,7 @@ class MixtureVAE(nn.Module):
         log_p_x_given_z = bernoulli_log_pdf(x.view(batch_size, -1), 
                                             x_mu.view(batch_size, -1))
         kl_div = self._kl_divergence(z, z_mu, z_logvar, logits)
-        elbo = recon_loss - kl_div
+        elbo = log_p_x_given_z - kl_div
         elbo = torch.mean(elbo)
         
         # important to negate so that we have a positive loss

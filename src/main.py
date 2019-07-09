@@ -102,9 +102,7 @@ def run(
                 loss_meter.update(loss.item(), batch_size)
                 pbar.update()
 
-                tqdm.set_postfix({
-                    'train elbo': loss_meter.avg,
-                })
+                pbar.set_postfix({'train elbo': loss_meter.avg})
         
         return loss_meter.avg
 
@@ -113,8 +111,9 @@ def run(
         model.eval()
         loss_meter = AverageMeter()
 
-        print('Test Epoch ({}/{})'.format(epoch + 1, epochs))
+        print('Val Epoch ({}/{})'.format(epoch + 1, epochs))
 
+        pbar = tqdm(total=len(val_loader))
         with torch.no_grad():
             for x, _ in val_loader:
                 batch_size = x.size(0)
@@ -123,8 +122,9 @@ def run(
                 x_mu, z, z_mu, z_logvar, logits = model(x)
                 loss = model.elbo(x, x_mu, z, z_mu, z_logvar, logits)
                 loss_meter.update(loss.item(), batch_size)
+                pbar.update()
 
-        print('Test ELBO: {}'.format(loss_meter.avg))
+        print('Val ELBO: {}'.format(loss_meter.avg))
         return loss_meter.avg
 
 
@@ -132,6 +132,7 @@ def run(
         model.eval()
         loss_meter = AverageMeter()
 
+        pbar = tqdm(total=len(test_loader))
         with torch.no_grad():
             for x, _ in test_loader:
                 batch_size = x.size(0)
@@ -139,6 +140,7 @@ def run(
 
                 log_density = model.log_likelihood(x, n_samples=100)
                 loss_meter.update(log_density.item(), batch_size)
+                pbar.update()
         
         print('Test Log Density: {}'.format(loss_meter.avg))
         return loss_meter.avg
@@ -182,12 +184,13 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint-directory', type=str, default='checkpoints')
-    parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--val_batch_size', type=int, default=200)
-    parser.add_argument('--dataset', type=str, default='MNIST')
-    parser.add_argument('--lr', type=float, default=3e-4)
-    parser.add_argument('--latent-size', type=int, default=2)
-    parser.add_argument('--n-mixtures', type=int, default=1)
+    parser.add_argument('--batch-size', type=int, default=64, help='default: 64')
+    parser.add_argument('--val_batch_size', type=int, default=200, help='default: 100')
+    parser.add_argument('--dataset', type=str, default='MNIST', help='default: MNIST')
+    parser.add_argument('--lr', type=float, default=3e-4, help='default: 3e-4')
+    parser.add_argument('--epochs', type=int, default=200, help='default: 200')
+    parser.add_argument('--latent-size', type=int, default=2, help='default: 2')
+    parser.add_argument('--n-mixtures', type=int, default=1, help='default: 1')
     args = parser.parse_args()
 
     dset2channel = {'MNIST': 1, 'FashionMNIST': 1, 'CIFAR10': 3}
@@ -197,7 +200,7 @@ if __name__ == '__main__':
         batch_size=args.batch_size,
         val_batch_size=args.val_batch_size,
         dataset=args.dataset,
-        epochs=args.epoch,
+        epochs=args.epochs,
         lr=args.lr,
         input_channels=dset2channel[args.dataset],
         latent_size=args.latent_size,
