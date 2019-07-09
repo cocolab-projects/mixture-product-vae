@@ -73,6 +73,26 @@ def bernoulli_log_pdf(x: torch.Tensor, mu: torch.Tensor):
     return torch.sum(x * torch.log(mu) + (1. - x) * torch.log(1. - mu), dim=1)
 
 
+def gaussian_log_pdf(x, mu, logvar):
+    sigma = torch.exp(0.5 * logvar)
+    dist = dist.normal.Normal(mu, sigma)
+    return dist.log_prob(x)
+
+
+def isotropic_gaussian_log_pdf(x):
+    log_q_z_i_given_x = 
+    mu = torch.zeros_like(x)
+    logvar = torch.zeros_like(x)
+    return gaussian_log_pdf(x, mu, logvar)
+
+
+def log_mean_exp(x, dim=1):
+    r"""log(1/k * sum(exp(x)))"""
+    m = torch.max(x, dim=dim, keepdim=True)[0]
+    return m + torch.log(torch.mean(torch.exp(x - m),
+                         dim=dim, keepdim=True))
+
+
 class ImageEncoder(nn.Module):
     """
     Parameterizes a variational posterior distribution, q(z|x) 
@@ -278,6 +298,12 @@ class MixtureVAE(nn.Module):
         return x_mu, z, z_mu, z_logvar, logits
 
     def elbo(self, x, x_mu, z, z_mu, z_logvar, logits):
+        """
+        Evidence lower bound objective on marginal log density.
+
+        log p(x) > E_{q(z|x)}[log p(x,z) - log q(z|x)]
+                 = E_{q(z|x)}[log p(x|z)] - KL(q(z|x)||p(z))
+        """
         batch_size = x.size(0)
         log_p_x_given_z = bernoulli_log_pdf(x.view(batch_size, -1), 
                                             x_mu.view(batch_size, -1))
@@ -291,3 +317,33 @@ class MixtureVAE(nn.Module):
         
         # important to negate so that we have a positive loss
         return -elbo
+    
+    def log_likelihood(self, x, n_samples=100):
+        """
+        Importance weighted estimate of marginal log density.
+
+        log p(x) ~  log { 1/K sum_{i=1}^K [exp{ log p(x,z_i) - log q(z_i|x)}] }
+        
+            where z_i ~ q(z|x) for i = 1 to 100
+        """
+        batch_size = x.size(0)
+        z_mu, z_logvar, logits = self.encoder(x)
+
+        log_w = []
+        for i in range(n_samples):
+            z_i = self.reparametrize(z_mu, z_logvar, logits)
+            x_mu_i = self.decoder(z_i)
+
+            log_p_x_given_z_i = bernoulli_log_pdf(x.view(batch_size, -1), 
+                                                  x_mu_i.view(batch_size, -1))
+            log_p_z_i = isotropic_gaussian_log_pdf(z_i)
+            log_q_z_i_given_x = gaussian_log_pdf(z_i, z_mu, z_logvar)
+
+            log_w_i = log_p_x_given_z_i + log_p_z_i - log_q_z_i_given_x
+            log_w_i = log_w_i.unsqueeze(1)
+            log_w_i = log_w_i.cpu()
+            log_w.append(log_w_i)
+        log_w = torch.cat(log_w, dim=1)
+        log_w = log_mean_exp(log_w, dim=1)
+
+        return log_w

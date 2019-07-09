@@ -128,6 +128,22 @@ def run(
         return loss_meter.avg
 
 
+    def test_log_density(epoch):
+        model.eval()
+        loss_meter = AverageMeter()
+
+        with torch.no_grad():
+            for x, _ in test_loader:
+                batch_size = x.size(0)
+                x = x.to(device)
+
+                log_density = model.log_likelihood(x, n_samples=100)
+                loss_meter.update(log_density.item(), batch_size)
+        
+        print('Test Log Density: {}'.format(loss_meter.avg))
+        return loss_meter.avg
+
+
     best_loss = np.inf
     is_best = False
 
@@ -153,7 +169,7 @@ def run(
     model.load_state_dict(checkpoint['state_dict'])
     model = model.eval()
 
-    test_loglike = model.log_likelihood(test_loader, n_samples=100)
+    test_loglike = test_log_density(epoch)
 
     # save this back into the checkpoint
     checkpoint['test_loglike'] = test_loglike
