@@ -58,6 +58,7 @@ def run(
         input_channels: int,
         latent_size: int,
         n_mixtures: int,
+        prior: str,
     ):
 
     os.makedirs(checkpoint_directory, exist_ok=True)
@@ -76,6 +77,7 @@ def run(
         latent_size,
         n_mixtures,
         n_filters = 32,
+        prior = prior,
     )
 
     model = model.to(device)
@@ -191,6 +193,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=200, help='default: 200')
     parser.add_argument('--latent-size', type=int, default=2, help='default: 2')
     parser.add_argument('--n-mixtures', type=int, default=1, help='default: 1')
+    parser.add_argument('--prior', type=str, default='gaussian', help='gaussian|mixture (default: gaussian)')
     args = parser.parse_args()
 
     dset2channel = {'MNIST': 1, 'FashionMNIST': 1, 'CIFAR10': 3}
@@ -205,6 +208,7 @@ if __name__ == '__main__':
         input_channels=dset2channel[args.dataset],
         latent_size=args.latent_size,
         n_mixtures=args.n_mixtures,
+        prior=args.prior,
     )
 
     print('Test Log-Likelihood: {}'.format(test_loglike))

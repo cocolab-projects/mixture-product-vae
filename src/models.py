@@ -1,3 +1,6 @@
+import pyro
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -90,9 +93,9 @@ def bernoulli_log_pdf(x: torch.Tensor, mu: torch.Tensor):
 
 def gaussian_log_pdf(x, mu, logvar):
     sigma = torch.exp(0.5 * logvar)
-    dist = dist.normal.Normal(mu, sigma)
+    gaussian= dist.normal.Normal(mu, sigma)
     # sum across all the dimensions except batch_size
-    return torch.sum(dist.log_prob(x), dim=1)
+    return torch.sum(gaussian.log_prob(x), dim=1)
 
 
 def isotropic_gaussian_log_pdf(x):
@@ -101,13 +104,12 @@ def isotropic_gaussian_log_pdf(x):
     return gaussian_log_pdf(x, mu, logvar)
 
 
-def mixture_normal_log_pdf(x, mu, logvar, component_weights):
+def mixture_normal_log_pdf(z, mu, logvar, component_weights):
     std = torch.exp(0.5 * logvar)
     log_q_z_given_x = pyro.distributions.MixtureOfDiagNormals(
         locs=mu, coord_scale=std, component_logits=component_weights,
     ).log_prob(z)
-    
-    return torch.sum(log_q_z_given_x, dim=1)
+    return log_q_z_given_x
 
 
 def log_mean_exp(x, dim=1):
@@ -304,10 +306,14 @@ class MixtureVAE(nn.Module):
 
         if self.prior == 'mixture':
             assert z_dim == 2, "we only support 2-dim latents"
+            assert n_mixtures > 1, "must have more than 1 mixture to use prior mixtures"
             n_interval = get_num_interval(n_mixtures)
-            prior_means = get_fixed_init(n_interval, 0, 1)
+            prior_mu = get_fixed_init(n_interval, 0, 1)
+            # sub-sample the right number of poitns
+            sub = np.random.choice(np.arange(len(prior_mu)), n_mixtures)
+            prior_mu = prior_mu[sub]
 
-            self.prior_mu = torch.from_numpy(prior_inits).float()
+            self.prior_mu = torch.from_numpy(prior_mu).float()
             prior_sigma = torch.ones_like(self.prior_mu) * 0.1
             self.prior_logvar = 2 * torch.log(prior_sigma)
             self.prior_weights = torch.ones(self.n_mixtures) / self.n_mixtures
@@ -345,12 +351,13 @@ class MixtureVAE(nn.Module):
         if self.n_mixtures == 1:
             if self.prior == 'gaussian':
                 kl_div = kl_divergence_normal_and_spherical(z_mu, z_logvar)
+                kl_div = torch.sum(kl_div, dim=1)
             elif self.prior == 'mixture':
-                prior_mu = self.prior_mu.to(x.device)
-                prior_logvar = self.prior_logvar.to(x.device)
-                prior_weights = self.prior_weights.to(x.device)
+                prior_mu = self.prior_mu.to(z.device)
+                prior_logvar = self.prior_logvar.to(z.device)
+                prior_weights = self.prior_weights.to(z.device)
                 kl_div = kl_divergence_normal_and_mixture(
-                    z_mu, z_logvar, z, prior_mu, prior_logvar, prior_weights)
+                    z_mu.squeeze(1), z_logvar.squeeze(1), z, prior_mu, prior_logvar, prior_weights)
             else:
                 raise Exception('prior {} not supported.'.format(self.prior))
         else:
@@ -358,16 +365,15 @@ class MixtureVAE(nn.Module):
             if self.prior == 'gaussian':
                 kl_div = kl_divergence_mixture_and_spherical(z_mu, z_logvar, z, component_weights)
             elif self.prior == 'mixture':
-                prior_mu = self.prior_mu.to(x.device)
-                prior_logvar = self.prior_logvar.to(x.device)
-                prior_weights = self.prior_weights.to(x.device)
+                prior_mu = self.prior_mu.to(z.device)
+                prior_logvar = self.prior_logvar.to(z.device)
+                prior_weights = self.prior_weights.to(z.device)
                 kl_div = kl_divergence_mixture_and_mixture(
                     z_mu, z_logvar, z, component_weights, 
                     prior_mu, prior_logvar, prior_weights)
             else:
                 raise Exception('prior {} not supported.'.format(self.prior))
 
-        kl_div = torch.sum(kl_div, dim=1)
         return kl_div
 
     def elbo(self, x, x_mu, z, z_mu, z_logvar, logits):
