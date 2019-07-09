@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as dist
 
+from utils import get_fixed_init, get_num_interval
+
 
 def gen_32_conv_output_dim(s: int):
     s = get_conv_output_dim(s, 2, 0, 2)
@@ -24,38 +26,51 @@ def get_conv_output_dim(I: int, K: int, P: int, S: int):
 def kl_divergence_normal_and_spherical(mu, logvar):
     """
     Closed-form representation of KL divergence between a N(mu, sigma)
-    and a spherical Gaussian N(0, 1).
+    posterior and a spherical Gaussian N(0, 1) prior.
 
     See https://arxiv.org/abs/1312.6114 for derivation.
     """
     return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
 
 
-def kl_divergence_mixture_and_spherical(z_mu, z_logvar, z, logits):
+def kl_divergence_mixture_and_spherical(z_mu, z_logvar, z, component_weights):
     """
-    KL Divergence between a mixture of normals and a spherical 
-    Gaussian N(0, 1). Derivation is as follows:
+    KL Divergence between a mixture of normals posterior and a spherical 
+    Gaussian N(0, 1) perior. Derivation is as follows:
 
     KL[q(z|x) || p(z)] = E_{q(z|x)}[log q(z|x) - log p(z)]
 
     Unfortunately, no analytical solution here. We must use a 
     approximate solution.
     """
-    q_prob = None
-    batch_size = mu.size(0)
+    log_q_z_given_x = mixture_normal_log_pdf(z, z_mu, z_logvar, component_weights)
+    log_p_z = isotropic_gaussian_log_pdf(z)
+    return log_q_z_given_x - log_p_z
 
-    z_std = (0.5 * z_logvar).exp()
-    weights = F.softmax(logits)
 
-    q_prob = pyro.distributions.MixtureOfDiagNormals(
-        locs=z_mu, coord_scale=z_std, component_logits=weights,
-    ).log_prob(z)
-    
-    p_prob = dist.normal.Normal(
-        loc=torch.zeros_like(z), scale=torch.ones_like(z),
-    ).log_prob(z)
+def kl_divergence_normal_and_mixture(z_mu, z_logvar, z,
+                                     prior_mu, prior_logvar, prior_weights):
+    """
+    KL Divergence between a gaussian posterior and a mixture
+    of normals prior. Derivation is as follows:
 
-    return q_prob - p_prob
+    KL[q(z|x) || p(z)] = E_{q(z|x)}[log q(z|x) - log p(z)]
+    """
+    log_q_z_given_x = gaussian_log_pdf(z, z_mu, z_logvar)
+    log_p_z = mixture_normal_log_pdf(z, prior_mu, prior_logvar, prior_weights)
+    return log_q_z_given_x - log_p_z
+
+def kl_divergence_mixture_and_mixture(z_mu, z_logvar, z, logits,
+                                      prior_mu, prior_logvar, prior_weights):
+    """
+    KL Divergence between a mixture of normals posterior and another
+    mixture of normals prior. Derivation is as follows:
+
+    KL[q(z|x) || p(z)] = E_{q(z|x)}[log q(z|x) - log p(z)]
+    """
+    log_q_z_given_x = mixture_normal_log_pdf(z, z_mu, z_logvar, logits)
+    log_p_z = mixture_normal_log_pdf(z, prior_mu, prior_logvar, prior_weights)
+    return log_q_z_given_x - log_p_z
 
 
 def bernoulli_log_pdf(x: torch.Tensor, mu: torch.Tensor):
@@ -76,7 +91,8 @@ def bernoulli_log_pdf(x: torch.Tensor, mu: torch.Tensor):
 def gaussian_log_pdf(x, mu, logvar):
     sigma = torch.exp(0.5 * logvar)
     dist = dist.normal.Normal(mu, sigma)
-    return dist.log_prob(x)
+    # sum across all the dimensions except batch_size
+    return torch.sum(dist.log_prob(x), dim=1)
 
 
 def isotropic_gaussian_log_pdf(x):
@@ -84,6 +100,15 @@ def isotropic_gaussian_log_pdf(x):
     mu = torch.zeros_like(x)
     logvar = torch.zeros_like(x)
     return gaussian_log_pdf(x, mu, logvar)
+
+
+def mixture_normal_log_pdf(x, mu, logvar, component_weights):
+    std = torch.exp(0.5 * logvar)
+    log_q_z_given_x = pyro.distributions.MixtureOfDiagNormals(
+        locs=mu, coord_scale=std, component_logits=component_weights,
+    ).log_prob(z)
+    
+    return torch.sum(log_q_z_given_x, dim=1)
 
 
 def log_mean_exp(x, dim=1):
@@ -251,6 +276,8 @@ class MixtureVAE(nn.Module):
     n_filters      : integer
                      number of filters to use in convolutional 
                      layers
+    prior          : string
+                     gaussian | mixture 
     """
 
     def __init__(
@@ -260,13 +287,31 @@ class MixtureVAE(nn.Module):
         z_dim: int,
         n_mixtures: int,
         n_filters: int = 32,
+        prior: str = 'gaussian',
     ):
         super().__init__()
+        # we will assume a prior mixture of the same number of components
+        assert prior in ['gaussian', 'mixture']
+
         self.z_dim = z_dim
         self.input_channels = input_channels
         self.image_size = image_size
         self.n_mixtures = n_mixtures
         self.n_filters = n_filters
+        self.prior = prior
+
+        self.prior_mu = None
+        self.prior_logvar = None
+
+        if self.prior == 'mixture':
+            assert z_dim == 2, "we only support 2-dim latents"
+            n_interval = get_num_interval(n_mixtures)
+            prior_means = get_fixed_init(n_interval, 0, 1)
+
+            self.prior_mu = torch.from_numpy(prior_inits).float()
+            prior_sigma = torch.ones_like(self.prior_mu) * 0.1
+            self.prior_logvar = 2 * torch.log(prior_sigma)
+            self.prior_weights = torch.ones(self.n_mixtures) / self.n_mixtures
 
         self.encoder = ImageEncoder(
             input_channels=input_channels, image_size=image_size, z_dim=z_dim,
@@ -297,6 +342,34 @@ class MixtureVAE(nn.Module):
         
         return x_mu, z, z_mu, z_logvar, logits
 
+    def _kl_divergence(self, z, z_mu, z_logvar, logits):
+        if self.n_mixtures == 1:
+            if self.prior == 'gaussian':
+                kl_div = kl_divergence_normal_and_spherical(z_mu, z_logvar)
+            elif self.prior == 'mixture':
+                prior_mu = self.prior_mu.to(x.device)
+                prior_logvar = self.prior_logvar.to(x.device)
+                prior_weights = self.prior_weights.to(x.device)
+                kl_div = kl_divergence_normal_and_mixture(
+                    z_mu, z_logvar, z, prior_mu, prior_logvar, prior_weights)
+            else:
+                raise Exception('prior {} not supported.'.format(self.prior))
+        else:
+            component_weights = F.softmax(logits, dim=1)
+            if self.prior == 'gaussian':
+                kl_div = kl_divergence_mixture_and_spherical(z_mu, z_logvar, z, component_weights)
+            elif self.prior == 'mixture':
+                prior_mu = self.prior_mu.to(x.device)
+                prior_logvar = self.prior_logvar.to(x.device)
+                prior_weights = self.prior_weights.to(x.device)
+                kl_div = kl_divergence_mixture_and_mixture(
+                    z_mu, z_logvar, z, component_weights, 
+                    prior_mu, prior_logvar, prior_weights)
+            else:
+                raise Exception('prior {} not supported.'.format(self.prior))
+
+        return kl_div
+
     def elbo(self, x, x_mu, z, z_mu, z_logvar, logits):
         """
         Evidence lower bound objective on marginal log density.
@@ -307,11 +380,7 @@ class MixtureVAE(nn.Module):
         batch_size = x.size(0)
         log_p_x_given_z = bernoulli_log_pdf(x.view(batch_size, -1), 
                                             x_mu.view(batch_size, -1))
-        if self.n_mixtures == 1:
-            kl_div = kl_divergence_normal_and_spherical(z_mu, z_logvar)
-        else:
-            kl_div = kl_divergence_mixture_and_spherical(z_mu, z_logvar, z, logits)
-
+        kl_div = self._kl_divergence(z, z_mu, z_logvar, logits)
         elbo = recon_loss - kl_div
         elbo = torch.mean(elbo)
         
@@ -333,13 +402,11 @@ class MixtureVAE(nn.Module):
         for i in range(n_samples):
             z_i = self.reparametrize(z_mu, z_logvar, logits)
             x_mu_i = self.decoder(z_i)
-
             log_p_x_given_z_i = bernoulli_log_pdf(x.view(batch_size, -1), 
                                                   x_mu_i.view(batch_size, -1))
-            log_p_z_i = isotropic_gaussian_log_pdf(z_i)
-            log_q_z_i_given_x = gaussian_log_pdf(z_i, z_mu, z_logvar)
-
-            log_w_i = log_p_x_given_z_i + log_p_z_i - log_q_z_i_given_x
+            kl_div_i = self._kl_divergence(z_i, z_mu, z_logvar, logits)
+            
+            log_w_i = log_p_x_given_z_i - kl_div_i
             log_w_i = log_w_i.unsqueeze(1)
             log_w_i = log_w_i.cpu()
             log_w.append(log_w_i)
