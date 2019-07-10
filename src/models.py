@@ -38,12 +38,12 @@ def kl_divergence_normal_and_spherical(mu, logvar):
 
 def kl_divergence_mixture_and_spherical(z_mu, z_logvar, z, component_weights):
     """
-    KL Divergence between a mixture of normals posterior and a spherical 
+    KL Divergence between a mixture of normals posterior and a spherical
     Gaussian N(0, 1) perior. Derivation is as follows:
 
     KL[q(z|x) || p(z)] = E_{q(z|x)}[log q(z|x) - log p(z)]
 
-    Unfortunately, no analytical solution here. We must use a 
+    Unfortunately, no analytical solution here. We must use a
     approximate solution.
     """
     log_q_z_given_x = mixture_normal_log_pdf(z, z_mu, z_logvar, component_weights)
@@ -83,8 +83,8 @@ def bernoulli_log_pdf(x: torch.Tensor, mu: torch.Tensor):
         Let pi be logits.
         pdf     = pi^x * (1 - pi)^(1-x)
         log_pdf = x * log(pi) + (1 - x) * log(1 - pi)
-    
-    In practice, we need to clamp pi (the logits) because if it 
+
+    In practice, we need to clamp pi (the logits) because if it
     becomes 0 or 1, then log(0) will be nan.
     """
     mu = torch.clamp(mu, 1e-7, 1.-1e-7)
@@ -121,7 +121,7 @@ def log_mean_exp(x, dim=1):
 
 class ImageEncoder(nn.Module):
     """
-    Parameterizes a variational posterior distribution, q(z|x) 
+    Parameterizes a variational posterior distribution, q(z|x)
     where x is an image.
 
     Args
@@ -139,12 +139,12 @@ class ImageEncoder(nn.Module):
     """
 
     def __init__(
-        self, 
-        input_channels: int, 
-        image_size: int, 
-        z_dim: int, 
+        self,
+        input_channels: int,
+        image_size: int,
+        z_dim: int,
         n_mixtures: int = 1,
-        n_filters: int = 32, 
+        n_filters: int = 32,
     ):
 
         super().__init__()
@@ -175,7 +175,7 @@ class ImageEncoder(nn.Module):
         batch_size = image.size(0)
 
         out = F.relu(self.conv(image))
-        # flatten this object so that we can push it through the 
+        # flatten this object so that we can push it through the
         # fully connected layer
         out = out.view(batch_size, self.n_filters * 4 * self.cout**2)
 
@@ -190,8 +190,8 @@ class ImageEncoder(nn.Module):
 
         # these are the output parameters of a Gaussian distribution
         z_mu, z_logvar = torch.chunk(z_params, 2, dim=1)
-        
-        # reshape to (batch_size, n_mixtures, z_dim) 
+
+        # reshape to (batch_size, n_mixtures, z_dim)
         # so we explicitly store the mixture number
         # NOTE: this will be 1 if normal VAE
         z_mu = z_mu.view(batch_size, self.n_mixtures, self.z_dim)
@@ -218,16 +218,16 @@ class ImageDecoder(nn.Module):
     """
 
     def __init__(
-        self, 
-        output_channels: int, 
-        image_size: int, 
-        z_dim: int, 
+        self,
+        output_channels: int,
+        image_size: int,
+        z_dim: int,
         n_filters: int = 32,
     ):
 
         super().__init__()
 
-        # deconvolutional layers: this will add pads to the matrix 
+        # deconvolutional layers: this will add pads to the matrix
         # and slowly grow the image into its original size.
         self.conv = nn.Sequential(
             nn.ConvTranspose2d(n_filters * 4, n_filters * 4, 2, 2, padding=0),
@@ -252,7 +252,7 @@ class ImageDecoder(nn.Module):
         out = F.relu(self.fc(z))
         out = out.view(batch_size, self.n_filters * 4, self.cout, self.cout)
         out = self.conv(out)
-        x_logits = out.view(batch_size, self.output_channels, 
+        x_logits = out.view(batch_size, self.output_channels,
                             self.image_size, self.image_size)
         x_mu = torch.sigmoid(x_logits)
         return x_mu
@@ -260,7 +260,7 @@ class ImageDecoder(nn.Module):
 
 class MixtureVAE(nn.Module):
     """
-    Variational Autoencoder with a mixture of Gaussians for the 
+    Variational Autoencoder with a mixture of Gaussians for the
     posterior distribution. Optionally, one can specify a mixture
     of Gaussians for the prior as well.
 
@@ -275,10 +275,10 @@ class MixtureVAE(nn.Module):
     n_mixtures     : integer
                      number of mixture components
     n_filters      : integer
-                     number of filters to use in convolutional 
+                     number of filters to use in convolutional
                      layers
     prior          : string
-                     gaussian | mixture 
+                     gaussian | mixture
     """
 
     def __init__(
@@ -321,7 +321,7 @@ class MixtureVAE(nn.Module):
         self.encoder = ImageEncoder(
             input_channels=input_channels, image_size=image_size, z_dim=z_dim,
             n_filters=n_filters, n_mixtures=n_mixtures)
-        
+
         self.decoder = ImageDecoder(
             output_channels=input_channels, image_size=image_size, z_dim=z_dim,
             n_filters=n_filters)
@@ -331,7 +331,7 @@ class MixtureVAE(nn.Module):
 
         if self.n_mixtures == 1:
             # get rid of 1st dimension since n_mixtures = 1
-            return dist.normal.Normal(loc=mu.squeeze(1), 
+            return dist.normal.Normal(loc=mu.squeeze(1),
                                       scale=std.squeeze(1)).rsample()
         else:  # this means we need to reparameterize with MixtureOfDiagNormals
             batch_size = mu.size(0)
@@ -344,7 +344,7 @@ class MixtureVAE(nn.Module):
         z_mu, z_logvar, logits = self.encoder(x)
         z = self.reparametrize(z_mu, z_logvar, logits)
         x_mu = self.decoder(z)
-        
+
         return x_mu, z, z_mu, z_logvar, logits
 
     def _kl_divergence(self, z, z_mu, z_logvar, logits):
@@ -369,7 +369,7 @@ class MixtureVAE(nn.Module):
                 prior_logvar = self.prior_logvar.to(z.device)
                 prior_weights = self.prior_weights.to(z.device)
                 kl_div = kl_divergence_mixture_and_mixture(
-                    z_mu, z_logvar, z, component_weights, 
+                    z_mu, z_logvar, z, component_weights,
                     prior_mu, prior_logvar, prior_weights)
             else:
                 raise Exception('prior {} not supported.'.format(self.prior))
@@ -384,21 +384,21 @@ class MixtureVAE(nn.Module):
                  = E_{q(z|x)}[log p(x|z)] - KL(q(z|x)||p(z))
         """
         batch_size = x.size(0)
-        log_p_x_given_z = bernoulli_log_pdf(x.view(batch_size, -1), 
+        log_p_x_given_z = bernoulli_log_pdf(x.view(batch_size, -1),
                                             x_mu.view(batch_size, -1))
         kl_div = self._kl_divergence(z, z_mu, z_logvar, logits)
         elbo = log_p_x_given_z - kl_div
         elbo = torch.mean(elbo)
-        
+
         # important to negate so that we have a positive loss
         return -elbo
-    
+
     def log_likelihood(self, x, n_samples=100):
         """
         Importance weighted estimate of marginal log density.
 
         log p(x) ~  log { 1/K sum_{i=1}^K [exp{ log p(x,z_i) - log q(z_i|x)}] }
-        
+
             where z_i ~ q(z|x) for i = 1 to 100
         """
         batch_size = x.size(0)
@@ -408,10 +408,10 @@ class MixtureVAE(nn.Module):
         for i in range(n_samples):
             z_i = self.reparametrize(z_mu, z_logvar, logits)
             x_mu_i = self.decoder(z_i)
-            log_p_x_given_z_i = bernoulli_log_pdf(x.view(batch_size, -1), 
+            log_p_x_given_z_i = bernoulli_log_pdf(x.view(batch_size, -1),
                                                   x_mu_i.view(batch_size, -1))
             kl_div_i = self._kl_divergence(z_i, z_mu, z_logvar, logits)
-            
+
             log_w_i = log_p_x_given_z_i - kl_div_i
             log_w_i = log_w_i.unsqueeze(1)
             log_w_i = log_w_i.cpu()

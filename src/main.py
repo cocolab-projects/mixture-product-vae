@@ -94,7 +94,7 @@ def run(
             for x, _ in train_loader:
                 batch_size = x.size(0)
                 x = x.to(device)
-                
+
                 optimizer.zero_grad()
                 x_mu, z, z_mu, z_logvar, logits = model(x)
                 loss = model.elbo(x, x_mu, z, z_mu, z_logvar, logits)
@@ -105,7 +105,7 @@ def run(
                 pbar.update()
 
                 pbar.set_postfix({'train elbo': loss_meter.avg})
-        
+
         return loss_meter.avg
 
     
@@ -143,7 +143,7 @@ def run(
                 log_density = torch.mean(model.log_likelihood(x, n_samples=100), dim=0)
                 loss_meter.update(log_density.item(), batch_size)
                 pbar.update()
-        
+
         print('Test Log Density: {}'.format(loss_meter.avg))
         return loss_meter.avg
 
@@ -154,7 +154,7 @@ def run(
     for epoch in range(epochs):
         train_elbo = train_one_epoch(epoch)
         val_elbo = validate(epoch)
-        
+
         if val_elbo < best_loss:
             is_best = True
             best_loss = val_elbo
@@ -167,7 +167,7 @@ def run(
         }, is_best=is_best, folder=checkpoint_directory)
 
     # at this point, load the best model
-    model_best_path = os.path.join( checkpoint_directory, 
+    model_best_path = os.path.join( checkpoint_directory,
                                     'model_best.pth.tar')
     checkpoint = torch.load(model_best_path)
     model.load_state_dict(checkpoint['state_dict'])
