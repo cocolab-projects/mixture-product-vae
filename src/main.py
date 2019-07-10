@@ -140,7 +140,7 @@ def run(
                 batch_size = x.size(0)
                 x = x.to(device)
 
-                log_density = model.log_likelihood(x, n_samples=100)
+                log_density = torch.mean(model.log_likelihood(x, n_samples=100), dim=0)
                 loss_meter.update(log_density.item(), batch_size)
                 pbar.update()
         
