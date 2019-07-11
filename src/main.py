@@ -59,6 +59,7 @@ def run(
         latent_size: int,
         n_mixtures: int,
         prior: str,
+        test_only: bool,
     ):
 
     os.makedirs(checkpoint_directory, exist_ok=True)
@@ -76,7 +77,7 @@ def run(
         32,
         latent_size,
         n_mixtures,
-        n_filters = 32,
+        n_filters = 64,
         prior = prior,
     )
 
@@ -148,23 +149,24 @@ def run(
         return loss_meter.avg
 
 
-    best_loss = np.inf
-    is_best = False
+    if not test_only:
+        best_loss = np.inf
+        is_best = False
 
-    for epoch in range(epochs):
-        train_elbo = train_one_epoch(epoch)
-        val_elbo = validate(epoch)
+        for epoch in range(epochs):
+            train_elbo = train_one_epoch(epoch)
+            val_elbo = validate(epoch)
 
-        if val_elbo < best_loss:
-            is_best = True
-            best_loss = val_elbo
+            if val_elbo < best_loss:
+                is_best = True
+                best_loss = val_elbo
 
-        save_checkpoint({
-            'state_dict': model.state_dict(),
-            'epoch': epoch,
-            'train_elbo': train_elbo,
-            'val_elbo': val_elbo,
-        }, is_best=is_best, folder=checkpoint_directory)
+            save_checkpoint({
+                'state_dict': model.state_dict(),
+                'epoch': epoch,
+                'train_elbo': train_elbo,
+                'val_elbo': val_elbo,
+            }, is_best=is_best, folder=checkpoint_directory)
 
     # at this point, load the best model
     model_best_path = os.path.join( checkpoint_directory,
@@ -189,12 +191,18 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=64, help='default: 64')
     parser.add_argument('--val_batch_size', type=int, default=200, help='default: 100')
     parser.add_argument('--dataset', type=str, default='MNIST', help='default: MNIST')
-    parser.add_argument('--lr', type=float, default=3e-4, help='default: 3e-4')
+    parser.add_argument('--lr', type=float, default=2e-4, help='default: 2e-4')
     parser.add_argument('--epochs', type=int, default=200, help='default: 200')
     parser.add_argument('--latent-size', type=int, default=2, help='default: 2')
     parser.add_argument('--n-mixtures', type=int, default=1, help='default: 1')
     parser.add_argument('--prior', type=str, default='gaussian', help='gaussian|mixture (default: gaussian)')
+    parser.add_argument('--test-only', action='store_true', default=False,
+                        help='do not train, only test (default: False)')
+    parser.add_argument('--seed', type=int, default=1337)
     args = parser.parse_args()
+
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     dset2channel = {'MNIST': 1, 'FashionMNIST': 1, 'CIFAR10': 3}
 
@@ -209,6 +217,7 @@ if __name__ == '__main__':
         latent_size=args.latent_size,
         n_mixtures=args.n_mixtures,
         prior=args.prior,
+        test_only=args.test_only,
     )
 
     print('Test Log-Likelihood: {}'.format(test_loglike))

@@ -33,7 +33,7 @@ def kl_divergence_normal_and_spherical(mu, logvar):
 
     See https://arxiv.org/abs/1312.6114 for derivation.
     """
-    return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+    return -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
 
 
 def kl_divergence_mixture_and_spherical(z_mu, z_logvar, z, component_weights):
@@ -62,6 +62,7 @@ def kl_divergence_normal_and_mixture(z_mu, z_logvar, z,
     log_q_z_given_x = gaussian_log_pdf(z, z_mu, z_logvar)
     log_p_z = mixture_normal_log_pdf(z, prior_mu, prior_logvar, prior_weights)
     return log_q_z_given_x - log_p_z
+
 
 def kl_divergence_mixture_and_mixture(z_mu, z_logvar, z, logits,
                                       prior_mu, prior_logvar, prior_weights):
@@ -327,12 +328,14 @@ class MixtureVAE(nn.Module):
             n_filters=n_filters)
 
     def reparametrize(self, mu, logvar, logits):
-        std = (0.5 * logvar).exp()  # shape: batch_size x n_mixtures x z_dim
+        std = torch.exp(0.5 * logvar)  # shape: batch_size x n_mixtures x z_dim
 
         if self.n_mixtures == 1:
             # get rid of 1st dimension since n_mixtures = 1
             return dist.normal.Normal(loc=mu.squeeze(1),
                                       scale=std.squeeze(1)).rsample()
+            # eps = torch.randn_like(std.squeeze(1))
+            # return eps.mul(std.squeeze(1)).add_(mu.squeeze(1))
         else:  # this means we need to reparameterize with MixtureOfDiagNormals
             batch_size = mu.size(0)
             return pyro.distributions.MixtureOfDiagNormals(
@@ -350,6 +353,7 @@ class MixtureVAE(nn.Module):
     def _kl_divergence(self, z, z_mu, z_logvar, logits):
         if self.n_mixtures == 1:
             if self.prior == 'gaussian':
+                z_mu, z_logvar = z_mu.squeeze(1), z_logvar.squeeze(1)
                 kl_div = kl_divergence_normal_and_spherical(z_mu, z_logvar)
                 kl_div = torch.sum(kl_div, dim=1)
             elif self.prior == 'mixture':
