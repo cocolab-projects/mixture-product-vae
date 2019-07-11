@@ -38,14 +38,11 @@ checkpoint = torch.load(model_best_path)
 model.load_state_dict(checkpoint['state_dict'])
 model = model.eval()
 
-
-
 sample_batch = torch.distributions.normal.Normal(
     torch.zeros((args.n_samples, model_args['latent_size'])),
     torch.ones((args.n_samples, model_args['latent_size']))).sample()
 
 samples = model.decoder(sample_batch)
-breakpoint()
 
 torchvision.utils.save_image(
     samples.cpu(), f'{args.sample_filename}.png', nrow=int(math.sqrt(args.n_samples)))
