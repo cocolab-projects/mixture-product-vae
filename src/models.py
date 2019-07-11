@@ -92,17 +92,20 @@ def bernoulli_log_pdf(x: torch.Tensor, mu: torch.Tensor):
     return torch.sum(x * torch.log(mu) + (1. - x) * torch.log(1. - mu), dim=1)
 
 
-def gaussian_log_pdf(x, mu, logvar):
+def gaussian_log_pdf(x, mu, logvar, return_sum=True):
     sigma = torch.exp(0.5 * logvar)
     gaussian= dist.normal.Normal(mu, sigma)
     # sum across all the dimensions except batch_size
-    return torch.sum(gaussian.log_prob(x), dim=1)
+    if return_sum:
+        return torch.sum(gaussian.log_prob(x), dim=1)
+    else:
+        return gaussian.log_prob(x)
 
 
-def isotropic_gaussian_log_pdf(x):
+def isotropic_gaussian_log_pdf(x, return_sum=True):
     mu = torch.zeros_like(x)
     logvar = torch.zeros_like(x)
-    return gaussian_log_pdf(x, mu, logvar)
+    return gaussian_log_pdf(x, mu, logvar, return_sum=return_sum)
 
 
 def mixture_normal_log_pdf(z, mu, logvar, component_weights):
@@ -414,13 +417,19 @@ class MixtureVAE(nn.Module):
             x_mu_i = self.decoder(z_i)
             log_p_x_given_z_i = bernoulli_log_pdf(x.view(batch_size, -1),
                                                   x_mu_i.view(batch_size, -1))
-            kl_div_i = self._kl_divergence(z_i, z_mu, z_logvar, logits)
+            log_q_z_given_x_i = gaussian_log_pdf(z_i, z_mu.squeeze(1), 
+                                                 z_logvar.squeeze(1),
+                                                 return_sum=False)
+            log_p_z_i = isotropic_gaussian_log_pdf(z_i, return_sum=False)
 
-            log_w_i = log_p_x_given_z_i - kl_div_i
+            log_q_z_given_x_i = log_q_z_given_x_i.sum(1)
+            log_p_z_i = log_p_z_i.sum(1)
+
+            log_w_i = log_p_x_given_z_i + log_p_z_i - log_q_z_given_x_i
             log_w_i = log_w_i.unsqueeze(1)
             log_w_i = log_w_i.cpu()
             log_w.append(log_w_i)
         log_w = torch.cat(log_w, dim=1)
         log_w = log_mean_exp(log_w, dim=1)
-
-        return log_w
+        
+        return torch.mean(log_w)

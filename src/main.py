@@ -131,7 +131,7 @@ def run(
         return loss_meter.avg
 
 
-    def test_log_density(epoch):
+    def test_log_density():
         model.eval()
         loss_meter = AverageMeter()
 
@@ -141,7 +141,7 @@ def run(
                 batch_size = x.size(0)
                 x = x.to(device)
 
-                log_density = torch.mean(model.log_likelihood(x, n_samples=100), dim=0)
+                log_density = torch.mean(model.log_likelihood(x, n_samples=1000), dim=0)
                 loss_meter.update(log_density.item(), batch_size)
                 pbar.update()
 
@@ -170,12 +170,12 @@ def run(
 
     # at this point, load the best model
     model_best_path = os.path.join( checkpoint_directory,
-                                    'model_best.pth.tar')
+                                    'checkpoint.pth.tar')
     checkpoint = torch.load(model_best_path)
     model.load_state_dict(checkpoint['state_dict'])
     model = model.eval()
 
-    test_loglike = test_log_density(epoch)
+    test_loglike = test_log_density()
 
     # save this back into the checkpoint
     checkpoint['test_loglike'] = test_loglike
